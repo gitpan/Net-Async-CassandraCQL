@@ -1,0 +1,24 @@
+Build.PL
+Changes
+examples/cqlsh
+lib/Net/Async/CassandraCQL.pm
+lib/Protocol/CassandraCQL.pm
+lib/Protocol/CassandraCQL/ColumnMeta.pm
+lib/Protocol/CassandraCQL/Frame.pm
+lib/Protocol/CassandraCQL/Result.pm
+MANIFEST			This list of files
+t/00use.t
+t/01frame.t
+t/02types.t
+t/03meta.t
+t/04result.t
+t/10send_message.t
+t/11messages.t
+t/12queue.t
+t/90local.t
+t/99pod.t
+Makefile.PL
+README
+LICENSE
+META.yml
+META.json

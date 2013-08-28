@@ -1,0 +1,157 @@
+NAME
+    `Net::Async::CassandraCQL' - use Cassandra databases with IO::Async
+    using CQL
+
+SYNOPSIS
+     use IO::Async::Loop;
+     use Net::Async::CassandraCQL;
+     use Protocol::CassandraCQL qw( CONSISTENCY_QUORUM );
+
+     my $loop = IO::Async::Loop->new;
+
+     my $cass = Net::Async::CassandraCQL->new(
+        host => "localhost",
+     );
+     $loop->add( $cass );
+
+     $cass->connect->then( sub {
+        $cass->query( "USE my-keyspace;" );
+     })->get;
+
+     my @f;
+     foreach my $number ( 1 .. 100 ) {
+        push @f, $cass->query( "INSERT INTO numbers (v) = $number;",
+           CONSISTENCY_QUORUM );
+     }
+     Future->needs_all( @f )->get;
+
+     my $get_stmt = $cass->prepare( "SELECT v FROM numbers;" )->get;
+
+     my ( undef, $result ) = $get_stmt->execute( [], CONSISTENCY_QUORUM )->get;
+
+     foreach my $idx ( 0 .. $result->rows - 1 ) {
+        say "We have a number " . $result->row_hash($idx)->{v};
+     }
+
+DESCRIPTION
+    This module allows use of the `CQL' interface of a Cassandra database.
+    It fully supports asynchronous operation via IO::Async, allowing both
+    direct queries and prepared statements to be managed.
+
+    It is based on Protocol::CassandraCQL, which more completely documents
+    the behaviours, and limits of its ability to communicate with Cassandra.
+
+PARAMETERS
+    The following named parameters may be passed to `new' or `configure':
+
+    host => STRING
+            The hostname of the Cassandra node to connect to
+
+    service => STRING
+            Optional. The service name or port number to connect to.
+
+METHODS
+  $f = $cass->connect( %args )
+    Connects to the Cassandra node an send the `OPCODE_STARTUP' message. The
+    returned Future will yield nothing on success.
+
+    Takes the following named arguments:
+
+    host => STRING
+    service => STRING
+            Optional. Overrides the configured values.
+
+    A host name is required, either as a named argument or as a configured
+    value on the object. If the service name is missing, the default CQL
+    port will be used instead.
+
+  $f = $cass->send_message( $opcode, $frame )
+    Sends a message with the given opcode and Protocol::CassandraCQL::Frame
+    for the message body. The returned Future will yield the response opcode
+    and frame.
+
+      ( $reply_opcode, $reply_frame ) = $f->get
+
+    This is a low-level method; applications should instead use one of the
+    wrapper methods below.
+
+  $f = $cass->startup
+    Sends a `OPCODE_STARTUP' message. On success, the returned Future yields
+    nothing.
+
+    Normally this is not required as the `connect' method performs it
+    implicitly.
+
+  $f = $cass->options
+    Sends a `OPCODE_OPTIONS' message. On success, the returned Future yields
+    a HASH reference mapping option names to ARRAY references containing
+    valid values.
+
+  $f = $cass->query( $cql, $consistency )
+    Sends a `OPCODE_QUERY' message. On success, the values returned from the
+    Future will depend on the type of response.
+
+     ( $type, $result ) = $f->get
+
+    For type `keyspace', `$result' is a string giving the name of the new
+    keyspace (returned from `USE' queries).
+
+    For type `schema_change', `$result' is a 3-element ARRAY reference
+    containing the type of change, the keyspace and the table name (returned
+    from `CREATE', `ALTER' and `DROP' queries).
+
+    For type `rows', `$result' is an instance of
+    Protocol::CassandraCQL::Result.
+
+    For void-returning queries such as `INSERT', the future returns nothing.
+
+  $f = $cass->prepare( $cql )
+    Sends a `OPCODE_PREPARE' message. On success, the returned Future yields
+    an instance of a prepared query object (see below).
+
+     ( $query ) = $f->get
+
+  $f = $cass->execute( $id, $data, $consistency )
+    Sends a `OPCODE_EXECUTE' message to execute a previously-prepared
+    statement. On success, the returned Future will yield results of the
+    same form as the `query' method. `$data' should contain a list of
+    encoded byte-string values.
+
+PREPARED QUERIES
+    Prepared query objects are returned by `prepare', and have the following
+    methods, in addition to those of its parent class,
+    Protocol::CassandraCQL::ColumnMeta.
+
+  $id = $query->id
+    Returns the query ID.
+
+  $f = $query->execute( $data, $consistency )
+    Executes the query on the Cassandra connection object that created it,
+    returning a future yielding the result the same way as the `query' or
+    `execute' methods.
+
+    The contents of the `$data' reference will be encoded according to the
+    types given in the underlying column metadata. `$data' may be given as a
+    positional ARRAY reference, or a named HASH reference where the keys
+    give column names.
+
+TODO
+    *       Handle OPCODE_AUTHENTICATE and OPCODE_REGISTER
+
+    *       Support frame compression
+
+    *       Move Protocol::CassandraCQL to its own distribution
+
+    *       Allow storing multiple Cassandra node hostnames and perform some
+            kind of balancing or failover of connections.
+
+SPONSORS
+    This code was paid for by
+
+    * Perceptyx http://www.perceptyx.com/
+
+    * Shadowcat Systems http://www.shadow.cat
+
+AUTHOR
+    Paul Evans <leonerd@leonerd.org.uk>
+
