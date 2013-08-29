@@ -17,23 +17,80 @@ name: Net-Async-CassandraCQL
 provides:
   Net::Async::CassandraCQL:
     file: lib/Net/Async/CassandraCQL.pm
-    version: 0.01
+    version: 0.02
   Protocol::CassandraCQL:
     file: lib/Protocol/CassandraCQL.pm
-    version: 0.01
+    version: 0.02
   Protocol::CassandraCQL::ColumnMeta:
     file: lib/Protocol/CassandraCQL/ColumnMeta.pm
-    version: 0.01
+    version: 0.02
   Protocol::CassandraCQL::Frame:
     file: lib/Protocol/CassandraCQL/Frame.pm
-    version: 0.01
+    version: 0.02
   Protocol::CassandraCQL::Result:
     file: lib/Protocol/CassandraCQL/Result.pm
-    version: 0.01
+    version: 0.02
+  Protocol::CassandraCQL::Type:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0.02
+  Protocol::CassandraCQL::Type::ASCII:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::BIGINT:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::BLOB:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::BOOLEAN:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::COUNTER:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::DECIMAL:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::DOUBLE:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::FLOAT:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::INT:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::LIST:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::MAP:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::SET:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::TEXT:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::TIMESTAMP:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::TIMEUUID:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::UUID:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::VARCHAR:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::VARINT:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
 requires:
   Encode: 0
   IO::Async::Protocol::Stream: 0
   Math::BigInt: 0
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.01
+version: 0.02

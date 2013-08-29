@@ -20,7 +20,7 @@ SYNOPSIS
 
      my @f;
      foreach my $number ( 1 .. 100 ) {
-        push @f, $cass->query( "INSERT INTO numbers (v) = $number;",
+        push @f, $cass->query( "INSERT INTO numbers (v) VALUES $number;",
            CONSISTENCY_QUORUM );
      }
      Future->needs_all( @f )->get;
@@ -29,17 +29,20 @@ SYNOPSIS
 
      my ( undef, $result ) = $get_stmt->execute( [], CONSISTENCY_QUORUM )->get;
 
-     foreach my $idx ( 0 .. $result->rows - 1 ) {
-        say "We have a number " . $result->row_hash($idx)->{v};
+     foreach my $row ( $result->rows_hash) {
+        say "We have a number " . $row->{v};
      }
 
 DESCRIPTION
-    This module allows use of the `CQL' interface of a Cassandra database.
+    This module allows use of the `CQLv3' interface of a Cassandra database.
     It fully supports asynchronous operation via IO::Async, allowing both
-    direct queries and prepared statements to be managed.
+    direct queries and prepared statements to be managed concurrently, if
+    required. Alternatively, as the interface is entirely based on Future
+    objects, it can be operated synchronously in a blocking fashion by
+    simply awaiting each individual operation by calling the `get' method.
 
     It is based on Protocol::CassandraCQL, which more completely documents
-    the behaviours, and limits of its ability to communicate with Cassandra.
+    the behaviours and limits of its ability to communicate with Cassandra.
 
 PARAMETERS
     The following named parameters may be passed to `new' or `configure':
@@ -76,46 +79,51 @@ METHODS
     wrapper methods below.
 
   $f = $cass->startup
-    Sends a `OPCODE_STARTUP' message. On success, the returned Future yields
-    nothing.
+    Sends the initial connection setup message. On success, the returned
+    Future yields nothing.
 
     Normally this is not required as the `connect' method performs it
     implicitly.
 
   $f = $cass->options
-    Sends a `OPCODE_OPTIONS' message. On success, the returned Future yields
-    a HASH reference mapping option names to ARRAY references containing
-    valid values.
+    Requests the list of supported options from the server node. On success,
+    the returned Future yields a HASH reference mapping option names to
+    ARRAY references containing valid values.
 
   $f = $cass->query( $cql, $consistency )
-    Sends a `OPCODE_QUERY' message. On success, the values returned from the
-    Future will depend on the type of response.
+    Performs a CQL query. On success, the values returned from the Future
+    will depend on the type of query.
 
      ( $type, $result ) = $f->get
 
-    For type `keyspace', `$result' is a string giving the name of the new
-    keyspace (returned from `USE' queries).
+    For `USE' queries, the type is `keyspace' and `$result' is a string
+    giving the name of the new keyspace.
 
-    For type `schema_change', `$result' is a 3-element ARRAY reference
-    containing the type of change, the keyspace and the table name (returned
-    from `CREATE', `ALTER' and `DROP' queries).
+    For `CREATE', `ALTER' and `DROP' queries, the type is `schema_change'
+    and `$result' is a 3-element ARRAY reference containing the type of
+    change, the keyspace and the table name.
 
-    For type `rows', `$result' is an instance of
-    Protocol::CassandraCQL::Result.
+    For `SELECT' queries, the type is `rows' and `$result' is an instance of
+    Protocol::CassandraCQL::Result containing the returned row data.
 
-    For void-returning queries such as `INSERT', the future returns nothing.
+    For other queries, such as `INSERT', `UPDATE' and `DELETE', the future
+    returns nothing.
 
   $f = $cass->prepare( $cql )
-    Sends a `OPCODE_PREPARE' message. On success, the returned Future yields
-    an instance of a prepared query object (see below).
+    Prepares a CQL query for later execution. On success, the returned
+    Future yields an instance of a prepared query object (see below).
 
      ( $query ) = $f->get
 
   $f = $cass->execute( $id, $data, $consistency )
-    Sends a `OPCODE_EXECUTE' message to execute a previously-prepared
-    statement. On success, the returned Future will yield results of the
-    same form as the `query' method. `$data' should contain a list of
-    encoded byte-string values.
+    Executes a previously-prepared statement, given its ID and the binding
+    data. On success, the returned Future will yield results of the same
+    form as the `query' method. `$data' should contain a list of encoded
+    byte-string values.
+
+    Normally this method is not directly required - instead, use the
+    `execute' method on the query object itself, as this will encode the
+    parameters correctly.
 
 PREPARED QUERIES
     Prepared query objects are returned by `prepare', and have the following

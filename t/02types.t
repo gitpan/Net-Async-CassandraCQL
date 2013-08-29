@@ -8,10 +8,21 @@ use Test::More;
 use Test::HexString;
 use Math::BigInt;
 
-use Protocol::CassandraCQL;
+use Protocol::CassandraCQL::Type;
 BEGIN {
-   *encode = \&Protocol::CassandraCQL::encode;
-   *decode = \&Protocol::CassandraCQL::decode;
+   *encode = sub {
+      my ( $typename, $v ) = @_;
+      Protocol::CassandraCQL::Type->from_name( $typename )->encode( $v );
+   };
+   *decode = sub {
+      my ( $typename, $b ) = @_;
+      Protocol::CassandraCQL::Type->from_name( $typename )->decode( $b );
+   };
+}
+
+{
+   my $type = Protocol::CassandraCQL::Type->from_name( do { my $tmp = "VARCHAR" } );
+   is( $type->name, "VARCHAR", '$type->name' );
 }
 
 is_hexstr( encode( ASCII => "hello" ), "hello", 'encode ASCII' );
@@ -30,7 +41,8 @@ ok(        decode( BOOLEAN => "\x01" ),         'decode BOOLEAN true' );
 ok(       !decode( BOOLEAN => "\x00" ),         'decode BOOLEAN false' );
 
 is_hexstr( encode( DOUBLE => 12.3456 ), "\x40\x28\xb0\xf2\x7b\xb2\xfe\xc5", 'encode DOUBLE' );
-is       ( decode( DOUBLE => "\x40\x28\xb0\xf2\x7b\xb2\xfe\xc5" ), 12.3456, 'decode DOUBLE' );
+# DOUBLE decode might not be exact
+ok(   abs( decode( DOUBLE => "\x40\x28\xb0\xf2\x7b\xb2\xfe\xc5" ) - 12.3456 ) < 0.00001, 'decode DOUBLE' );
 
 is_hexstr( encode( FLOAT => 1.234 ), "\x3f\x9d\xf3\xb6", 'encode FLOAT' );
 # FLOAT decode might not be exact
@@ -42,6 +54,11 @@ is       ( decode( INT => "\x00\xbc\x61\x4e" ), 12345678, 'decode INT' );
 # UNIX epoch timestamps 1377686281 == 2013/08/28 11:38:01
 is_hexstr( encode( TIMESTAMP => 1377686281 ), "\x00\x00\x01\x40\xc4\x80\x5b\x28", 'encode TIMESTAMP' );
 is       ( decode( TIMESTAMP => "\x00\x00\x01\x40\xc4\x80\x5b\x28" ), 1377686281, 'decode TIMESTAMP' );
+
+is_hexstr( encode( UUID => "01234567-0123-0123-0123-0123456789ab" ),
+           "\x01\x23\x45\x67\x01\x23\x01\x23\x01\x23\x01\x23\x45\x67\x89\xab", 'encode UUID' );
+is       ( decode( UUID => "\x01\x23\x45\x67\x01\x23\x01\x23\x01\x23\x01\x23\x45\x67\x89\xab" ),
+           "01234567-0123-0123-0123-0123456789ab", 'decode UUID' );
 
 is_hexstr( encode( VARCHAR => "café" ), "caf\xc3\xa9", 'encode VARCHAR' );
 is       ( decode( VARCHAR => "caf\xc3\xa9" ), "café", 'decode VARCHAR' );
@@ -75,5 +92,32 @@ is_hexstr( encode( DECIMAL => 100 ), "\0\0\0\0\x64", 'encode DECIMAL 100' );
 is       ( decode( DECIMAL => "\0\0\0\0\x64" ), 100, 'decode DECIMAL 100' );
 is_hexstr( encode( DECIMAL => 0.25 ), "\0\0\0\2\x19", 'encode DECIMAL 0.25' );
 is       ( decode( DECIMAL => "\0\0\0\2\x19" ), 0.25, 'decode DECIMAL 0.25' );
+
+# Now the collections
+
+is_hexstr( encode( "LIST<INT>" => [1,2,3] ),
+           "\0\3\0\4\x00\x00\x00\x01\0\4\x00\x00\x00\x02\0\4\x00\x00\x00\x03",
+           'encode LIST<INT>' );
+is_deeply( decode( "LIST<INT>" => "\0\3\0\4\x00\x00\x00\x01\0\4\x00\x00\x00\x02\0\4\x00\x00\x00\x03" ),
+           [1,2,3],
+           'decode LIST<INT>' );
+
+# Don't want to rely on ordering
+is_hexstr( encode( "MAP<VARCHAR,INT>" => { one => 1 } ),
+           "\0\1\0\3one\0\4\x00\x00\x00\x01",
+           'encode MAP<VARCHAR,INT> 1' );
+is_deeply( decode( "MAP<VARCHAR,INT>" => "\0\1\0\3one\0\4\x00\x00\x00\x01" ),
+           { one => 1 },
+           'encode MAP<VARCHAR,INT> 1' );
+is_deeply( decode( "MAP<VARCHAR,INT>", encode( "MAP<VARCHAR,INT>", { one => 1, two => 2, three => 3 } ) ),
+           { one => 1, two => 2, three => 3 },
+           'encode/decode MAP<VARCHAR,INT>' );
+
+is_hexstr( encode( "SET<VARCHAR>" => [qw( red green blue )] ),
+           "\0\3\0\3red\0\5green\0\4blue",
+           'encode SET<VARCHAR>' );
+is_deeply( decode( "SET<VARCHAR>" => "\0\3\0\3red\0\5green\0\4blue" ),
+           [qw( red green blue )],
+           'decode SET<VARCHAR>' );
 
 done_testing;

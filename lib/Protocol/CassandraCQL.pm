@@ -8,13 +8,10 @@ package Protocol::CassandraCQL;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use Exporter 'import';
 our @EXPORT_OK = qw();
-
-use Encode ();
-use Scalar::Util qw( blessed );
 
 =head1 NAME
 
@@ -139,145 +136,6 @@ sub typename
    return $typenames{$type};
 }
 
-=head2 $b = encode( $type, $v )
-
-=head2 $v = decode( $type, $b )
-
-Encode or decode a bytestring for a CQL value of the given type.
-
-=cut
-
-# Method dispatch is kinda slow but easy to maintain
-# TODO: find something faster
-
-sub encode
-{
-   my ( $type, $v ) = @_;
-
-   return undef if !defined $v;
-
-   if( my $code = __PACKAGE__->can( "encode_$type" ) ) {
-      return $code->( $v );
-   }
-   else {
-      warn "Not sure how to encode $type";
-      return $v;
-   }
-}
-
-sub decode
-{
-   my ( $type, $b ) = @_;
-
-   return undef if !defined $b;
-
-   if( my $code = __PACKAGE__->can( "decode_$type" ) ) {
-      return $code->( $b );
-   }
-   else {
-      warn "Not sure how to decode $type";
-      # Fallback to a text-safe hexbytes representation
-      return unpack "H*", $b;
-   }
-}
-
-# Now the codecs
-
-# ASCII-only bytes
-sub encode_ASCII { $_[0] =~ m/^[\x00-\x7f]*$/ or die "Non-ASCII"; $_[0] }
-sub decode_ASCII { $_[0] }
-
-# 64-bit integer
-sub encode_BIGINT { pack   "q>", $_[0] }
-sub decode_BIGINT { unpack "q>", $_[0] }
-
-# blob
-sub encode_BLOB { $_[0] }
-sub decode_BLOB { $_[0] }
-
-# true/false byte
-sub encode_BOOLEAN { pack   "C", !!$_[0] }
-sub decode_BOOLEAN { !!unpack "C", $_[0] }
-
-# counter is a 64-bit integer
-*encode_COUNTER = \&encode_BIGINT;
-*decode_COUNTER = \&decode_BIGINT;
-
-# Not clearly docmuented, but this appears to be an INT decimal shift followed
-# by a VARINT
-sub encode_DECIMAL {
-   require Math::BigFloat;
-   my $shift = $_[0] =~ m/\.(\d*)$/ ? length $1 : 0;
-   my $n = blessed $_[0] ? $_[0] : Math::BigFloat->new( $_[0] );
-   return pack( "L>", $shift ) . encode_VARINT( $n->blsft($shift, 10) );
-}
-
-sub decode_DECIMAL {
-   require Math::BigFloat;
-   my $shift = unpack "L>", $_[0];
-   my $n = decode_VARINT( substr $_[0], 4 );
-   return scalar Math::BigFloat->new($n)->brsft($shift, 10);
-}
-
-# IEEE double
-sub encode_DOUBLE { pack   "d>", $_[0] }
-sub decode_DOUBLE { unpack "d>", $_[0] }
-
-# IEEE single
-sub encode_FLOAT { pack   "f>", $_[0] }
-sub decode_FLOAT { unpack "f>", $_[0] }
-
-# 32-bit integer
-sub encode_INT { pack   "l>", $_[0] }
-sub decode_INT { unpack "l>", $_[0] }
-
-# 'text' seems to come back as 'varchar' but we'll leave them both aliased
-*encode_VARCHAR = *encode_TEXT = \&Encode::encode_utf8;
-*decode_VARCHAR = *decode_TEXT = \&Encode::decode_utf8;
-
-# miliseconds since UNIX epoch as 64bit uint
-sub encode_TIMESTAMP {  pack   "Q>", ($_[0] * 1000) }
-sub decode_TIMESTAMP { (unpack "Q>", $_[0]) / 1000  }
-
-# TODO: UUID
-
-# Arbitrary-precision 2s-complement signed integer
-# Math::BigInt doesn't handle signed, but we can mangle it
-sub encode_VARINT {
-   require Math::BigInt;
-   my $n = blessed $_[0] ? $_[0] : Math::BigInt->new($_[0]); # upgrade to a BigInt
-
-   my $bytes;
-   if( $n < 0 ) {
-      my $hex = substr +(-$n-1)->as_hex, 2;
-      $hex = "0$hex" if length($hex) % 2;
-      $bytes = ~(pack "H*", $hex);
-      # Sign-extend if required to avoid appearing positive
-      $bytes = "\xff$bytes" if unpack( "C", $bytes ) < 0x80;
-   }
-   else {
-      my $hex = substr $n->as_hex, 2; # trim 0x
-      $hex = "0$hex" if length($hex) % 2;
-      $bytes = pack "H*", $hex;
-      # Zero-extend if required to avoid appearing negative
-      $bytes = "\0$bytes" if unpack( "C", $bytes ) >= 0x80;
-   }
-   $bytes;
-}
-
-sub decode_VARINT {
-   require Math::BigInt;
-
-   if( unpack( "C", $_[0] ) >= 0x80 ) {
-      return -Math::BigInt->from_hex( unpack "H*", ~$_[0] ) - 1;
-   }
-   else {
-      return Math::BigInt->from_hex( unpack "H*", $_[0] );
-   }
-}
-
-# TODO: INET
-
 =head1 TODO
 
 =over 8
@@ -289,12 +147,7 @@ performance.
 
 =item *
 
-Use something faster than dynamic method dispatch for C<encode()> and
-C<decode()>.
-
-=item *
-
-Codecs for TYPE_UUID, TYPE_INET
+Codecs for TYPE_INET
 
 =item *
 

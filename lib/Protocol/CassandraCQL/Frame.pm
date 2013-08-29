@@ -8,7 +8,7 @@ package Protocol::CassandraCQL::Frame;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use Encode qw( encode_utf8 decode_utf8 );
 
@@ -57,7 +57,8 @@ Returns a new frame buffer, optionally initialised with the given byte string.
 sub new
 {
    my $class = shift;
-   my $bytes = $_[0] // "";
+   my $bytes = "";
+   $bytes = $_[0] if defined $_[0];
    bless \$bytes, $class;
 }
 
@@ -129,7 +130,7 @@ sub unpack_lstring { my $l = $_[0]->unpack_int;
 
 =head2 $frame->pack_uuid( $v )
 
-=head2 $frame->unpack_uuid
+=head2 $v = $frame->unpack_uuid
 
 Add or remove a UUID as a plain 16-byte raw scalar
 

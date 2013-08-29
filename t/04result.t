@@ -56,4 +56,27 @@ use Protocol::CassandraCQL::Result;
               '$result->row_hash(0)' );
 }
 
+# Multiple rows
+{
+   my $result = Protocol::CassandraCQL::Result->from_frame(
+      Protocol::CassandraCQL::Frame->new(
+         "\0\0\0\1\0\0\0\2\0\4test\0\7numbers\0\4name\0\x0a\0\1i\0\x09" . # metadata
+         "\0\0\0\3" . # row count
+         "\0\0\0\4zero\0\0\0\4\x00\x00\x00\x00" . # row 0
+         "\0\0\0\3one\0\0\0\4\x00\x00\x00\x01"  . # row 1
+         "\0\0\0\3two\0\0\0\4\x00\x00\x00\x02"    # row 2
+      )
+   );
+
+   is( scalar $result->rows, 3, '$result->rows is 3' );
+
+   is_deeply( [ $result->rows_array ],
+              [ [ "zero", 0 ], [ "one", 1 ], [ "two", 2 ] ],
+              '$result->rows_array' );
+
+   is_deeply( [ $result->rows_hash ],
+              [ { name => "zero", i => 0 }, { name => "one", i => 1 }, { name => "two", i => 2 } ],
+              '$result->rows_hash' );
+}
+
 done_testing;

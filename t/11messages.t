@@ -190,7 +190,7 @@ $loop->add( $cass );
    is( $query->id, "0123456789ABCDEF", '$query->id after ->prepare->get' );
    is( $query->columns, 1, '$query->columns' );
    is( scalar $query->column_name(0), "test.t.f", '$query->column_name(0)' );
-   is( $query->column_type(0), "VARCHAR", '$query->column_type(0)' );
+   is( $query->column_type(0)->name, "VARCHAR", '$query->column_type(0)->name' );
 
    # ->execute directly
    $f = $cass->execute( "0123456789ABCDEF", [ "more-data" ], CONSISTENCY_ANY );

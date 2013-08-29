@@ -57,8 +57,8 @@ pass( "INSERT INTO tbl" );
    is( $result->rows, 1, '$result has 1 row' );
    is( scalar $result->column_name(0), "$CONFIG{keyspace}.tbl1.key", 'column_name 0' );
    is( scalar $result->column_name(1), "$CONFIG{keyspace}.tbl1.t1",  'column_name 1' );
-   is( $result->column_type(0), "VARCHAR", 'column_type 0' );
-   is( $result->column_type(1), "VARCHAR", 'column_type 1' );
+   is( $result->column_type(0)->name, "VARCHAR", 'column_type 0 name' );
+   is( $result->column_type(1)->name, "VARCHAR", 'column_type 1 name' );
 
    is( $result->find_column( "key" ), 0, 'find_column key' );
 
@@ -80,8 +80,8 @@ pass( "INSERT INTO tbl" );
    is( $query->columns, 2, '$query has 2 columns for prepared INSERT' );
    is( scalar $query->column_name(0), "$CONFIG{keyspace}.tbl1.key", 'column_name 0' );
    is( scalar $query->column_name(1), "$CONFIG{keyspace}.tbl1.i1",  'column_name 1' );
-   is( $query->column_type(0), "VARCHAR", 'column_type 0' );
-   is( $query->column_type(1), "INT",     'column_type 1' );
+   is( $query->column_type(0)->name, "VARCHAR", 'column_type 0 name' );
+   is( $query->column_type(1)->name, "INT",     'column_type 1 name' );
 
    # ARRAY
    $query->execute( [ "another-key", 123456789 ], CONSISTENCY_ONE )->get;
@@ -169,6 +169,32 @@ EOCQL
                    i => undef, bi => undef, vi => undef },
                  "Number deserialisation for $name" );
    }
+}
+
+# Now test the collections
+{
+   $cass->query( <<'EOCQL', CONSISTENCY_ONE )->get;
+CREATE TABLE collections (
+   key text PRIMARY KEY,
+   a_set set<text>,
+   a_list list<int>,
+   a_map map<text,text>);
+EOCQL
+   my $table = 1;
+   END { $table and $cass->query( "DROP TABLE collections;", CONSISTENCY_ONE )->await }
+
+   $cass->query( "INSERT INTO collections (key, a_set) VALUES ('letters', {'a', 'b', 'c'});", CONSISTENCY_ONE )->get;
+   $cass->query( "INSERT INTO collections (key, a_list) VALUES ('numbers', [1, 2, 3]);", CONSISTENCY_ONE )->get;
+   $cass->query( "INSERT INTO collections (key, a_map) VALUES ('upcase', {'x':'X', 'y':'Y'})", CONSISTENCY_ONE )->get;
+
+   my ( undef, $result ) = $cass->query( "SELECT * FROM collections;", CONSISTENCY_ONE )->get;
+
+   # TODO: Consider $result->rowmap_hash("key")
+   my %rowmap = map { $_->{key} => $_ } $result->rows_hash;
+
+   is_deeply( $rowmap{letters}{a_set},  [qw( a b c )],    'SET serialisation' );
+   is_deeply( $rowmap{numbers}{a_list}, [ 1, 2, 3 ],      'LIST serialisation' );
+   is_deeply( $rowmap{upcase}{a_map},   {x=>"X", y=>"Y"}, 'MAP serialisation' );
 }
 
 done_testing;

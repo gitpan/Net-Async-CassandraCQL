@@ -7,17 +7,22 @@ use 5.010;
 use IO::Async::Loop;
 use Net::Async::CassandraCQL;
 
+use Getopt::Long;
 use List::Util qw( max );
 use POSIX qw( strftime );
 use Term::ReadLine;
 
 use Data::Dump 'pp';
 
-use Protocol::CassandraCQL qw( CONSISTENCY_ONE );
+use Protocol::CassandraCQL qw( CONSISTENCY_ONE :types );
+
+GetOptions(
+   'host|h=s' => \(my $HOST = "localhost"),
+) or exit 1;
 
 my $loop = IO::Async::Loop->new;
 my $cassie = Net::Async::CassandraCQL->new(
-   host => "localhost"
+   host => $HOST,
 );
 $loop->add( $cassie );
 
@@ -58,38 +63,14 @@ while( defined( my $query = $term->readline(sprintf "\ncql%s> ", defined $keyspa
          foreach my $col ( 0 .. $#$d ) {
             $columns[$col][$i] = "", next if !defined $d->[$col];
 
-            my $type = $result->column_type( $col );
-            my $str;
-            if( $type eq "BOOLEAN" ) {
-               $str = $d->[$col] ? "true" : "false";
-            }
-            elsif( $type eq "BLOB" ) {
-               $str = unpack "H*", $d->[$col];
-            }
-            elsif( $type eq "DOUBLE" ) {
-               $str = sprintf "%.9g", $d->[$col];
-            }
-            elsif( $type eq "FLOAT" ) {
-               $str = sprintf "%.5g", $d->[$col];
-            }
-            elsif( $type eq "TIMESTAMP" ) {
-               my $sec  = int( $d->[$col] );
-               my $msec = 1000 * ( $d->[$col] - $sec );
-               $str = strftime( "%Y-%m-%d %H:%M:%S", localtime $sec ) . sprintf ".%03d", $msec;
-            }
-            elsif( $type eq "ASCII" or $type eq "VARCHAR" ) {
-               $str = qq("$d->[$col]"); # TODO - neater somehow
-            }
-            else {
-               $str = $d->[$col];
-            }
+            my $str = $result->column_type( $col )->stringify( $d->[$col] );
 
             $columns[$col][$i] = $str;
          }
       }
       my @colwidths = map {
          max map { length } $result->column_shortname($_),
-                            $result->column_type($_),
+                            $result->column_type($_)->name,
                             @{ $columns[$_] }
       } 0 .. $#columns;
 
@@ -97,7 +78,7 @@ while( defined( my $query = $term->readline(sprintf "\ncql%s> ", defined $keyspa
       print join( " | ", map { sprintf "%-*s", $colwidths[$_], $result->column_shortname($_) } 0 .. $#columns ) . "\n";
 
       # Column types
-      print join( " | ", map { sprintf "%-*s", $colwidths[$_], scalar $result->column_type($_) } 0 .. $#columns ) . "\n";
+      print join( " | ", map { sprintf "%-*s", $colwidths[$_], $result->column_type($_)->name } 0 .. $#columns ) . "\n";
 
       # Divider
       print join( "-+-", map { "-" x $colwidths[$_] } 0 .. $#columns ) . "\n";
@@ -113,3 +94,34 @@ while( defined( my $query = $term->readline(sprintf "\ncql%s> ", defined $keyspa
 }
 
 print "\n"; # clear the last prompt
+
+# Cheating
+
+sub Protocol::CassandraCQL::Type::ASCII::stringify   { qq('$_[1]') }
+sub Protocol::CassandraCQL::Type::BOOLEAN::stringify { $_[1] ? "true" : "false" }
+sub Protocol::CassandraCQL::Type::BLOB::stringify    { unpack "H*", $_[1] }
+sub Protocol::CassandraCQL::Type::DOUBLE::stringify  { sprintf "%.9g", $_[1] }
+sub Protocol::CassandraCQL::Type::FLOAT::stringify   { sprintf "%.5g", $_[1] }
+sub Protocol::CassandraCQL::Type::TIMESTAMP::stringify {
+   my $sec  = int( $_[1] );
+   my $msec = 1000 * ( $_[1] - $sec );
+   strftime( "%Y-%m-%d %H:%M:%S", localtime $sec ) . sprintf ".%03d", $msec }
+sub Protocol::CassandraCQL::Type::VARCHAR::stringify { qq('$_[1]') }
+
+sub Protocol::CassandraCQL::Type::LIST::stringify {
+   my $l = $_[1];
+   "[" . join(", ", map { $_[0]->element_type->stringify($_) } @$l) . "]"
+}
+
+sub Protocol::CassandraCQL::Type::SET::stringify {
+   my $l = $_[1];
+   "{" . join(", ", map { $_[0]->element_type->stringify($_) } @$l) . "}"
+}
+
+sub Protocol::CassandraCQL::Type::MAP::stringify {
+   my $m = $_[1];
+   "{" . join(", ", map { $_[0]->key_type->stringify($_) . "," .
+                          $_[0]->value_type->stringify($m->{$_}) } sort keys %$m ) . "}"
+}
+
+sub Protocol::CassandraCQL::Type::stringify { $_[1] }

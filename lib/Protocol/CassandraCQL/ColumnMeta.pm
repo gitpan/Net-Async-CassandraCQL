@@ -8,9 +8,9 @@ package Protocol::CassandraCQL::ColumnMeta;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
-use Protocol::CassandraCQL qw( :types );
+use Protocol::CassandraCQL::Type;
 
 =head1 NAME
 
@@ -57,13 +57,9 @@ sub from_frame
    foreach ( 1 .. $n_columns ) {
       my @keyspace_table = $has_gts ? @gts : ( $frame->unpack_string, $frame->unpack_string );
       my $colname        = $frame->unpack_string;
+      my $type           = Protocol::CassandraCQL::Type->from_frame( $frame );
 
-      my $typeid = $frame->unpack_short;
-      my @col = ( @keyspace_table, $colname, undef, $typeid );
-
-      if( $typeid == TYPE_CUSTOM ) {
-         push @col, $frame->unpack_string;
-      }
+      my @col = ( @keyspace_table, $colname, undef, $type );
 
       push @columns, \@col;
    }
@@ -143,7 +139,8 @@ sub column_shortname
 
 =head2 $type = $meta->column_type( $idx )
 
-Returns the type name of the column at the given index.
+Returns the type of the column at the given index as an instance of
+L<Protocol::CassandraCQL::Type>.
 
 =cut
 
@@ -152,10 +149,8 @@ sub column_type
    my $self = shift;
    my ( $idx ) = @_;
 
-   my ( $typeid, $custom ) = @{ $self->{columns}[$idx] }[4,5];
-   return $custom if $typeid == TYPE_CUSTOM;
+   return $self->{columns}[$idx][4];
 
-   return Protocol::CassandraCQL::typename( $typeid );
 }
 
 =head2 $idx = $meta->find_column( $name )
@@ -186,7 +181,7 @@ sub encode_data
    my $self = shift;
    my @data = @_;
 
-   return map { Protocol::CassandraCQL::encode( $self->column_type( $_ ), $data[$_] ) }
+   return map { defined $data[$_] ? $self->column_type( $_ )->encode( $data[$_] ) : undef }
           0 .. $#data;
 }
 
@@ -202,7 +197,7 @@ sub decode_data
    my $self = shift;
    my @bytes = @_;
 
-   return map { Protocol::CassandraCQL::decode( $self->column_type( $_ ), $bytes[$_] ) }
+   return map { defined $bytes[$_] ? $self->column_type( $_ )->decode( $bytes[$_] ) : undef }
           0 .. $#bytes;
 }
 
