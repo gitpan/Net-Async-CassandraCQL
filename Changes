@@ -1,5 +1,14 @@
 Revision history for Net-Async-CassandraCQL
 
+0.03    CHANGES:
+         * Allow setting a default consistency level to avoid needing one at
+           every call to ->query or ->execute
+         * Validate perl data being passed to ->execute bind parameters
+         * Added $result->rowmap_array and ->rowmap_hash
+         * Implement INET type
+         * Moved more parsing/building code into Protocol::CassandraCQL to
+           prepare for distribution split
+
 0.02    CHANGES:
          * Added $result->rows_array and ->rows_hash
          * Represent types as firstclass objects

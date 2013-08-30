@@ -8,19 +8,19 @@ package Protocol::CassandraCQL;
 use strict;
 use warnings;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use Exporter 'import';
 our @EXPORT_OK = qw();
 
 =head1 NAME
 
-C<Protocol::CassandraCQL> - wire protocol support functions for Cassandra CQLv3
+C<Protocol::CassandraCQL> - wire protocol support functions for Cassandra CQL3
 
 =head1 DESCRIPTION
 
 This module provides the basic constants and other support functions required
-to communicate with a Cassandra database using C<CQLv3>. It is not in itself a
+to communicate with a Cassandra database using C<CQL3>. It is not in itself a
 CQL client; it simply provides the necessary support functions to allow one to
 be written.
 
@@ -144,14 +144,6 @@ sub typename
 
 Reimplement L<Protocol::CassandraCQL::Frame> in XS code for better
 performance.
-
-=item *
-
-Codecs for TYPE_INET
-
-=item *
-
-More robust testing of data types, arguments to methods, etc...
 
 =back
 

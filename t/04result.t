@@ -77,6 +77,18 @@ use Protocol::CassandraCQL::Result;
    is_deeply( [ $result->rows_hash ],
               [ { name => "zero", i => 0 }, { name => "one", i => 1 }, { name => "two", i => 2 } ],
               '$result->rows_hash' );
+
+   is_deeply( $result->rowmap_array( 0 ),
+              { zero => [ "zero", 0 ],
+                one  => [ "one",  1 ],
+                two  => [ "two",  2 ] },
+              '$result->rowmap_array' );
+
+   is_deeply( $result->rowmap_hash( "name" ),
+              { zero => { name => "zero", i => 0 },
+                one  => { name => "one",  i => 1 },
+                two  => { name => "two",  i => 2 } },
+              '$result->rowmap_hash' );
 }
 
 done_testing;

@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
+use Test::Fatal;
 use Test::HexString;
 
 use Protocol::CassandraCQL::Frame;
@@ -52,6 +53,10 @@ use Protocol::CassandraCQL::ColumnMeta;
    is_deeply( [ $meta->decode_data( "another-key", "\0\0\0\x7c", "\0\0\0\0\0\0\x01\xc9" ) ],
               [ "another-key", 124, 457 ],
               '->decode_data' );
+
+   like( exception { $meta->encode_data( "bad-data", "a string", 0 ) },
+         qr/Cannot encode i: not a number/,
+         '->encode_data validates types' );
 }
 
 # Collections
@@ -85,6 +90,10 @@ use Protocol::CassandraCQL::ColumnMeta;
    is_hexstr( $bytes[2],
       "\0\1\0\4name\0\4\x00\x00\x00\x64",
       '->encode_data MAP<TEXT,INT>' );
+
+   like( exception { $meta->encode_data( [ 0, 1, "bad" ], [], {} ) },
+         qr/Cannot encode set: \[2]: not a number/,
+         '->encode_data validates collection types' );
 }
 
 done_testing;

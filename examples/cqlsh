@@ -10,6 +10,7 @@ use Net::Async::CassandraCQL;
 use Getopt::Long;
 use List::Util qw( max );
 use POSIX qw( strftime );
+use Socket qw( inet_ntoa inet_ntop AF_INET6 );
 use Term::ReadLine;
 
 use Data::Dump 'pp';
@@ -33,8 +34,7 @@ $cassie->connect->get;
 my $keyspace;
 
 if( @ARGV ) {
-   my $want = shift @ARGV;
-   ( undef, $keyspace ) = $cassie->query( "USE $want;", CONSISTENCY_ONE )->get;
+   ( undef, $keyspace ) = $cassie->use_keyspace( shift @ARGV )->get;
 }
 
 while( defined( my $query = $term->readline(sprintf "\ncql%s> ", defined $keyspace ? ":$keyspace" : "") ) ) {
@@ -122,6 +122,12 @@ sub Protocol::CassandraCQL::Type::MAP::stringify {
    my $m = $_[1];
    "{" . join(", ", map { $_[0]->key_type->stringify($_) . "," .
                           $_[0]->value_type->stringify($m->{$_}) } sort keys %$m ) . "}"
+}
+
+sub Protocol::CassandraCQL::Type::INET::stringify {
+   length($_[1]) ==  4 ? inet_ntoa( $_[1] ) :
+   length($_[1]) == 16 ? inet_ntop( AF_INET6, $_[1] ) :
+                         unpack "H*", $_[1]
 }
 
 sub Protocol::CassandraCQL::Type::stringify { $_[1] }

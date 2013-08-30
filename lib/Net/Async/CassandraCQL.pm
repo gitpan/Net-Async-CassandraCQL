@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use base qw( IO::Async::Protocol::Stream );
 
@@ -36,34 +36,33 @@ C<Net::Async::CassandraCQL> - use Cassandra databases with L<IO::Async> using CQ
 
  my $cass = Net::Async::CassandraCQL->new(
     host => "localhost",
+    keyspace => "my-keyspace",
+    default_consistency => CONSISTENCY_QUORUM,
  );
  $loop->add( $cass );
 
 
- $cass->connect->then( sub {
-    $cass->query( "USE my-keyspace;" );
- })->get;
+ $cass->connect->get;
 
 
  my @f;
  foreach my $number ( 1 .. 100 ) {
-    push @f, $cass->query( "INSERT INTO numbers (v) VALUES $number;",
-       CONSISTENCY_QUORUM );
+    push @f, $cass->query( "INSERT INTO numbers (v) VALUES $number" );
  }
  Future->needs_all( @f )->get;
 
 
- my $get_stmt = $cass->prepare( "SELECT v FROM numbers;" )->get;
+ my $get_stmt = $cass->prepare( "SELECT v FROM numbers" )->get;
 
- my ( undef, $result ) = $get_stmt->execute( [], CONSISTENCY_QUORUM )->get;
+ my ( undef, $result ) = $get_stmt->execute( [] )->get;
 
- foreach my $row ( $result->rows_hash) {
+ foreach my $row ( $result->rows_hash ) {
     say "We have a number " . $row->{v};
  }
 
 =head1 DESCRIPTION
 
-This module allows use of the C<CQLv3> interface of a Cassandra database. It
+This module allows use of the C<CQL3> interface of a Cassandra database. It
 fully supports asynchronous operation via L<IO::Async>, allowing both direct
 queries and prepared statements to be managed concurrently, if required.
 Alternatively, as the interface is entirely based on L<Future> objects, it can
@@ -89,6 +88,16 @@ The hostname of the Cassandra node to connect to
 
 Optional. The service name or port number to connect to.
 
+=item keyspace => STRING
+
+Optional. If set, a C<USE keyspace> query will be issued as part of the
+connect method.
+
+=item default_consistency => INT
+
+Optional. Default consistency level to use if none is provided to C<query> or
+C<execute>.
+
 =back
 
 =cut
@@ -107,7 +116,7 @@ sub configure
    my $self = shift;
    my %params = @_;
 
-   foreach (qw( host service )) {
+   foreach (qw( host service keyspace default_consistency )) {
       $self->{$_} = delete $params{$_} if exists $params{$_};
    }
 
@@ -155,6 +164,8 @@ Takes the following named arguments:
 
 =item service => STRING
 
+=item keyspace => STRING
+
 Optional. Overrides the configured values.
 
 =back
@@ -173,10 +184,17 @@ sub connect
    $args{host}    //= $self->{host}    or croak "Require 'host'";
    $args{service} //= $self->{service} // DEFAULT_CQL_PORT;
 
+   my $keyspace = $args{keyspace} // $self->{keyspace};
+
    return ( $self->{connect_f} ||=
       $self->SUPER::connect( %args )->on_fail( sub { undef $self->{connect_f} } ) )
       ->and_then( sub {
          $self->startup
+      })->then( sub {
+         my $f = shift;
+         return $f unless defined $keyspace;
+
+         $self->use_keyspace( $keyspace );
       });
 }
 
@@ -185,19 +203,12 @@ sub on_read
    my $self = shift;
    my ( $buffref, $eof ) = @_;
 
-   return 0 unless length $$buffref >= 8;
-
-   my $bodylen = unpack( "x4 N", $$buffref );
-   return 0 unless length $$buffref >= 8 + $bodylen;
-
-   my ( $version, $flags, $streamid, $opcode ) = unpack( "C C C C x4", substr $$buffref, 0, 8, "" );
-   my $body = substr $$buffref, 0, $bodylen, "";
+   my ( $version, $flags, $streamid, $opcode, $frame ) =
+      Protocol::CassandraCQL::Frame->parse( $$buffref ) or return 0;
 
    # v1 response
    $version == 0x81 or
       $self->fail_all_and_close( sprintf "Unexpected message version %#02x\n", $version ), return;
-
-   my $frame = Protocol::CassandraCQL::Frame->new( $body );
 
    # TODO: flags
    if( my $f = $self->{streams}[$streamid] ) {
@@ -303,10 +314,7 @@ sub _send
    my $self = shift;
    my ( $opcode, $id, $frame, $f ) = @_;
 
-   my $version = 0x01;
-   my $flags   = 0;
-   my $body    = $frame->bytes;
-   $self->write( pack "C C C C N a*", $version, $flags, $id, $opcode, length $body, $body );
+   $self->write( $frame->build( 0x01, 0, $id, $opcode ) );
 
    $self->{streams}[$id] = $f;
 }
@@ -391,6 +399,9 @@ sub query
    my $self = shift;
    my ( $cql, $consistency ) = @_;
 
+   $consistency //= $self->{default_consistency};
+   defined $consistency or croak "'query' needs a consistency level";
+
    $self->send_message( OPCODE_QUERY,
       Protocol::CassandraCQL::Frame->new->pack_lstring( $cql )
                                         ->pack_short( $consistency )
@@ -444,6 +455,9 @@ sub execute
    my $self = shift;
    my ( $id, $data, $consistency ) = @_;
 
+   $consistency //= $self->{default_consistency};
+   defined $consistency or croak "'execute' needs a consistency level";
+
    my $frame = Protocol::CassandraCQL::Frame->new
       ->pack_short_bytes( $id )
       ->pack_short( scalar @$data );
@@ -455,6 +469,31 @@ sub execute
       $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
       return _decode_result( $response );
    });
+}
+
+=head1 CONVENIENT WRAPPERS
+
+The following wrapper methods all wrap the basic C<query> operation.
+
+=cut
+
+=head2 $f = $cass->use_keyspace( $keyspace )
+
+A convenient shortcut to the C<USE $keyspace> query which escapes the keyspace
+name.
+
+=cut
+
+sub use_keyspace
+{
+   my $self = shift;
+   my ( $keyspace ) = @_;
+
+   # CQL's "quoting" handles any character except quote marks, which have to
+   # be doubled
+   $keyspace =~ s/"/""/g;
+
+   $self->query( qq(USE "$keyspace"), 0 );
 }
 
 package # hide from CPAN

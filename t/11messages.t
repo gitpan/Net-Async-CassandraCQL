@@ -12,7 +12,7 @@ use IO::Async::Loop;
 use IO::Async::Stream;
 
 use Net::Async::CassandraCQL;
-use Protocol::CassandraCQL qw( CONSISTENCY_ANY CONSISTENCY_ONE );
+use Protocol::CassandraCQL qw( CONSISTENCY_ANY CONSISTENCY_ONE CONSISTENCY_TWO );
 
 my $loop = IO::Async::Loop->new();
 testing_loop( $loop );
@@ -73,15 +73,15 @@ $loop->add( $cass );
 
 # ->query returning void
 {
-   my $f = $cass->query( "INSERT INTO things (name) VALUES ('thing');", CONSISTENCY_ANY );
+   my $f = $cass->query( "INSERT INTO things (name) VALUES ('thing')", CONSISTENCY_ANY );
 
    my $stream = "";
-   wait_for_stream { length $stream >= 8 + 49 } $S2 => $stream;
+   wait_for_stream { length $stream >= 8 + 48 } $S2 => $stream;
 
    # OPCODE_QUERY
    is_hexstr( $stream,
-              "\x01\x00\x01\x07\0\0\0\x31" .
-                 "\0\0\0\x2bINSERT INTO things (name) VALUES ('thing');\0\0",
+              "\x01\x00\x01\x07\0\0\0\x30" .
+                 "\0\0\0\x2aINSERT INTO things (name) VALUES ('thing')\0\0",
               'stream after ->query INSERT' );
 
    # OPCODE_RESULT
@@ -95,15 +95,15 @@ $loop->add( $cass );
 
 # ->query returning rows
 {
-   my $f = $cass->query( "SELECT a,b FROM c;", CONSISTENCY_ONE );
+   my $f = $cass->query( "SELECT a,b FROM c", CONSISTENCY_ONE );
 
    my $stream = "";
-   wait_for_stream { length $stream >= 8 } $S2 => $stream;
+   wait_for_stream { length $stream >= 8 + 23 } $S2 => $stream;
 
    # OPCODE_QUERY
    is_hexstr( $stream,
-              "\x01\x00\x01\x07\0\0\0\x18" .
-                 "\0\0\0\x12SELECT a,b FROM c;\0\1",
+              "\x01\x00\x01\x07\0\0\0\x17" .
+                 "\0\0\0\x11SELECT a,b FROM c\0\1",
               'stream after ->query SELECT' );
 
    # OPCODE_RESULT
@@ -124,15 +124,15 @@ $loop->add( $cass );
 
 # ->query returning set_keyspace
 {
-   my $f = $cass->query( "USE test;", CONSISTENCY_ANY );
+   my $f = $cass->query( "USE test", CONSISTENCY_ANY );
 
    my $stream = "";
-   wait_for_stream { length $stream >= 8 + 13 } $S2 => $stream;
+   wait_for_stream { length $stream >= 8 + 12 } $S2 => $stream;
 
    # OPCODE_QUERY
    is_hexstr( $stream,
-              "\x01\x00\x01\x07\0\0\0\x0f" .
-                 "\0\0\0\x09USE test;\0\0",
+              "\x01\x00\x01\x07\0\0\0\x0e" .
+                 "\0\0\0\x08USE test\0\0",
               'stream after ->query USE' );
 
    # OPCODE_RESULT
@@ -146,15 +146,15 @@ $loop->add( $cass );
 
 # ->query returning schema_change
 {
-   my $f = $cass->query( "DROP TABLE users;", CONSISTENCY_ANY );
+   my $f = $cass->query( "DROP TABLE users", CONSISTENCY_ANY );
 
    my $stream = "";
-   wait_for_stream { length $stream >= 8 + 21 } $S2 => $stream;
+   wait_for_stream { length $stream >= 8 + 20 } $S2 => $stream;
 
    # OPCODE_QUERY
    is_hexstr( $stream,
-              "\x01\x00\x01\x07\0\0\0\x17" .
-                 "\0\0\0\x11DROP TABLE users;\0\0",
+              "\x01\x00\x01\x07\0\0\0\x16" .
+                 "\0\0\0\x10DROP TABLE users\0\0",
               'stream after ->query DROP TABLE' );
 
    # OPCODE_RESULT
@@ -166,17 +166,38 @@ $loop->add( $cass );
               '->query DROP TABLE returns schema change' );
 }
 
-# ->prepare and ->execute
+# ->query using default_consistency
 {
-   my $f = $cass->prepare( "INSERT INTO t (f) = (?);" );
+   $cass->configure( default_consistency => CONSISTENCY_TWO );
+
+   my $f = $cass->query( "SELECT * FROM things" );
 
    my $stream = "";
-   wait_for_stream { length $stream >= 8 + 28 } $S2 => $stream;
+   wait_for_stream { length $stream >= 8 + 26 } $S2 => $stream;
+
+   # OPCODE_QUERY
+   is_hexstr( $stream,
+              "\x01\x00\x01\x07\0\0\0\x1a" .
+                 "\0\0\0\x14SELECT * FROM things\0\2",
+              'stream after ->query using default_consistency' );
+
+   # OPCODE_RESULT - void but we don't care
+   $S2->syswrite( "\x81\x00\x01\x08\0\0\0\4\0\0\0\0" );
+
+   wait_for { $f->is_ready };
+}
+
+# ->prepare and ->execute
+{
+   my $f = $cass->prepare( "INSERT INTO t (f) = (?)" );
+
+   my $stream = "";
+   wait_for_stream { length $stream >= 8 + 27 } $S2 => $stream;
 
    # OPCODE_PREPARE
    is_hexstr( $stream,
-              "\x01\x00\x01\x09\0\0\0\x1c" .
-                 "\0\0\0\x18INSERT INTO t (f) = (?);",
+              "\x01\x00\x01\x09\0\0\0\x1b" .
+                 "\0\0\0\x17INSERT INTO t (f) = (?)",
               'stream after ->prepare' );
 
    # OPCODE_RESULT

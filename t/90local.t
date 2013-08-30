@@ -31,25 +31,27 @@ use Protocol::CassandraCQL qw( CONSISTENCY_ONE );
 my $loop = IO::Async::Loop->new();
 testing_loop( $loop );
 
-my $cass = Net::Async::CassandraCQL->new;
+my $cass = Net::Async::CassandraCQL->new( default_consistency => CONSISTENCY_ONE );
 $loop->add( $cass );
 
-$cass->connect( host => $CONFIG{host}, service => $CONFIG{port} )->get;
+$cass->connect(
+   host     => $CONFIG{host},
+   service  => $CONFIG{port},
+   keyspace => $CONFIG{keyspace},
+)->get;
 
-$cass->query( "USE $CONFIG{keyspace};", CONSISTENCY_ONE )->get;
-
-$cass->query( "CREATE TABLE tbl1 (key varchar PRIMARY KEY, t1 varchar, i1 int);", CONSISTENCY_ONE )->get;
+$cass->query( "CREATE TABLE tbl1 (key varchar PRIMARY KEY, t1 varchar, i1 int)" )->get;
 my $table = 1;
-END { $table and $cass->query( "DROP TABLE tbl1;", CONSISTENCY_ONE )->await }
+END { $table and $cass->query( "DROP TABLE tbl1" )->await }
 
 pass( "CREATE TABLE" );
 
-$cass->query( "INSERT INTO tbl1 (key, t1) VALUES ('the-key', 'the-value');", CONSISTENCY_ONE )->get;
+$cass->query( "INSERT INTO tbl1 (key, t1) VALUES ('the-key', 'the-value')" )->get;
 pass( "INSERT INTO tbl" );
 
 # SELECT as ->query
 {
-   my ( $type, $result ) = $cass->query( "SELECT key, t1 FROM tbl1;", CONSISTENCY_ONE )->get;
+   my ( $type, $result ) = $cass->query( "SELECT key, t1 FROM tbl1" )->get;
 
    is( $type, "rows", "SELECT query result type is rows" );
 
@@ -73,7 +75,7 @@ pass( "INSERT INTO tbl" );
 
 # INSERT as ->prepare / ->execute
 {
-   my $query = $cass->prepare( "INSERT INTO tbl1 (key, i1) VALUES (?, ?);" )->get;
+   my $query = $cass->prepare( "INSERT INTO tbl1 (key, i1) VALUES (?, ?)" )->get;
 
    ok( length $query->id, '$query->id is set for prepared INSERT' );
 
@@ -84,21 +86,21 @@ pass( "INSERT INTO tbl" );
    is( $query->column_type(1)->name, "INT",     'column_type 1 name' );
 
    # ARRAY
-   $query->execute( [ "another-key", 123456789 ], CONSISTENCY_ONE )->get;
+   $query->execute( [ "another-key", 123456789 ] )->get;
 
    # HASH
-   $query->execute( { key => "second-key", i1 => 987654321 }, CONSISTENCY_ONE )->get;
+   $query->execute( { key => "second-key", i1 => 987654321 } )->get;
 }
 
 # SELECT as ->prepare / ->execute
 {
-   my $query = $cass->prepare( "SELECT i1 FROM tbl1 WHERE key = ?;" )->get;
+   my $query = $cass->prepare( "SELECT i1 FROM tbl1 WHERE key = ?" )->get;
 
    ok( length $query->id, '$query->id is set for prepared SELECT' );
 
    is( $query->columns, 1, '$query has 1 column for prepared SELECT' );
 
-   my ( $type, $result ) = $query->execute( [ "another-key" ], CONSISTENCY_ONE )->get;
+   my ( $type, $result ) = $query->execute( [ "another-key" ] )->get;
 
    is( $type, "rows", 'SELECT prepare/execute result type is rows' );
 
@@ -109,14 +111,14 @@ pass( "INSERT INTO tbl" );
 
 # Now test we have the right (de)serialisation form for all the numeric types
 {
-   $cass->query( <<'EOCQL', CONSISTENCY_ONE )->get;
+   $cass->query( <<'EOCQL' )->get;
 CREATE TABLE numbers (
    key text PRIMARY KEY,
    i int, bi bigint, vi varint,
-   flt float, dbl double, d decimal);
+   flt float, dbl double, d decimal)
 EOCQL
    my $table = 1;
-   END { $table and $cass->query( "DROP TABLE numbers;", CONSISTENCY_ONE )->await }
+   END { $table and $cass->query( "DROP TABLE numbers" )->await }
 
    my %ints = (
       zero => 0,
@@ -127,16 +129,16 @@ EOCQL
       million => 1_000_000,
    );
 
-   my $getn_stmt = $cass->prepare( "SELECT * FROM numbers WHERE key = ?;" )->get;
+   my $getn_stmt = $cass->prepare( "SELECT * FROM numbers WHERE key = ?" )->get;
 
    foreach my $name ( keys %ints ) {
       my $n = $ints{$name};
-      $cass->query( "INSERT INTO numbers (key, i, bi, vi, flt, dbl, d) VALUES ('$name', $n, $n, $n, $n, $n, $n);", CONSISTENCY_ONE )->get;
+      $cass->query( "INSERT INTO numbers (key, i, bi, vi, flt, dbl, d) VALUES ('$name', $n, $n, $n, $n, $n, $n)" )->get;
    }
 
    foreach my $name ( keys %ints ) {
       my $n = $ints{$name};
-      my ( undef, $result ) = $getn_stmt->execute( { key => $name }, CONSISTENCY_ONE )->get;
+      my ( undef, $result ) = $getn_stmt->execute( { key => $name } )->get;
 
       is_deeply( $result->row_hash(0),
                  { key => $name, map { +$_ => $n } qw( i bi vi flt dbl d ) },
@@ -151,12 +153,12 @@ EOCQL
 
    foreach my $name ( keys %reals ) {
       my $n = $reals{$name};
-      $cass->query( "INSERT INTO numbers (key, flt, dbl, d) VALUES ('$name', $n, $n, $n);", CONSISTENCY_ONE )->get;
+      $cass->query( "INSERT INTO numbers (key, flt, dbl, d) VALUES ('$name', $n, $n, $n);" )->get;
    }
 
    foreach my $name ( keys %reals ) {
       my $n = $reals{$name};
-      my ( undef, $result ) = $getn_stmt->execute( { key => $name }, CONSISTENCY_ONE )->get;
+      my ( undef, $result ) = $getn_stmt->execute( { key => $name } )->get;
 
       # floats aren't digit-wise exact
       my $row = $result->row_hash(0);
@@ -173,28 +175,27 @@ EOCQL
 
 # Now test the collections
 {
-   $cass->query( <<'EOCQL', CONSISTENCY_ONE )->get;
+   $cass->query( <<'EOCQL' )->get;
 CREATE TABLE collections (
    key text PRIMARY KEY,
    a_set set<text>,
    a_list list<int>,
-   a_map map<text,text>);
+   a_map map<text,text>)
 EOCQL
    my $table = 1;
-   END { $table and $cass->query( "DROP TABLE collections;", CONSISTENCY_ONE )->await }
+   END { $table and $cass->query( "DROP TABLE collections" )->await }
 
-   $cass->query( "INSERT INTO collections (key, a_set) VALUES ('letters', {'a', 'b', 'c'});", CONSISTENCY_ONE )->get;
-   $cass->query( "INSERT INTO collections (key, a_list) VALUES ('numbers', [1, 2, 3]);", CONSISTENCY_ONE )->get;
-   $cass->query( "INSERT INTO collections (key, a_map) VALUES ('upcase', {'x':'X', 'y':'Y'})", CONSISTENCY_ONE )->get;
+   $cass->query( "INSERT INTO collections (key, a_set) VALUES ('letters', {'a', 'b', 'c'})" )->get;
+   $cass->query( "INSERT INTO collections (key, a_list) VALUES ('numbers', [1, 2, 3])" )->get;
+   $cass->query( "INSERT INTO collections (key, a_map) VALUES ('upcase', {'x':'X', 'y':'Y'})" )->get;
 
-   my ( undef, $result ) = $cass->query( "SELECT * FROM collections;", CONSISTENCY_ONE )->get;
+   my ( undef, $result ) = $cass->query( "SELECT * FROM collections;" )->get;
 
-   # TODO: Consider $result->rowmap_hash("key")
-   my %rowmap = map { $_->{key} => $_ } $result->rows_hash;
+   my $map = $result->rowmap_hash( "key" );
 
-   is_deeply( $rowmap{letters}{a_set},  [qw( a b c )],    'SET serialisation' );
-   is_deeply( $rowmap{numbers}{a_list}, [ 1, 2, 3 ],      'LIST serialisation' );
-   is_deeply( $rowmap{upcase}{a_map},   {x=>"X", y=>"Y"}, 'MAP serialisation' );
+   is_deeply( $map->{letters}{a_set},  [qw( a b c )],    'SET serialisation' );
+   is_deeply( $map->{numbers}{a_list}, [ 1, 2, 3 ],      'LIST serialisation' );
+   is_deeply( $map->{upcase}{a_map},   {x=>"X", y=>"Y"}, 'MAP serialisation' );
 }
 
 done_testing;

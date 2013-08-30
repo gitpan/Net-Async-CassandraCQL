@@ -5,6 +5,7 @@ author:
 build_requires:
   IO::Async::Loop: 0
   IO::Async::Test: 0
+  Test::Fatal: 0
   Test::HexString: 0
   Test::More: 0.88
 dynamic_config: 1
@@ -17,22 +18,22 @@ name: Net-Async-CassandraCQL
 provides:
   Net::Async::CassandraCQL:
     file: lib/Net/Async/CassandraCQL.pm
-    version: 0.02
+    version: 0.03
   Protocol::CassandraCQL:
     file: lib/Protocol/CassandraCQL.pm
-    version: 0.02
+    version: 0.03
   Protocol::CassandraCQL::ColumnMeta:
     file: lib/Protocol/CassandraCQL/ColumnMeta.pm
-    version: 0.02
+    version: 0.03
   Protocol::CassandraCQL::Frame:
     file: lib/Protocol/CassandraCQL/Frame.pm
-    version: 0.02
+    version: 0.03
   Protocol::CassandraCQL::Result:
     file: lib/Protocol/CassandraCQL/Result.pm
-    version: 0.02
+    version: 0.03
   Protocol::CassandraCQL::Type:
     file: lib/Protocol/CassandraCQL/Type.pm
-    version: 0.02
+    version: 0.03
   Protocol::CassandraCQL::Type::ASCII:
     file: lib/Protocol/CassandraCQL/Type.pm
     version: 0
@@ -55,6 +56,9 @@ provides:
     file: lib/Protocol/CassandraCQL/Type.pm
     version: 0
   Protocol::CassandraCQL::Type::FLOAT:
+    file: lib/Protocol/CassandraCQL/Type.pm
+    version: 0
+  Protocol::CassandraCQL::Type::INET:
     file: lib/Protocol/CassandraCQL/Type.pm
     version: 0
   Protocol::CassandraCQL::Type::INT:
@@ -93,4 +97,4 @@ requires:
   Math::BigInt: 0
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.02
+version: 0.03

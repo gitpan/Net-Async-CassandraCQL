@@ -11,30 +11,29 @@ SYNOPSIS
 
      my $cass = Net::Async::CassandraCQL->new(
         host => "localhost",
+        keyspace => "my-keyspace",
+        default_consistency => CONSISTENCY_QUORUM,
      );
      $loop->add( $cass );
 
-     $cass->connect->then( sub {
-        $cass->query( "USE my-keyspace;" );
-     })->get;
+     $cass->connect->get;
 
      my @f;
      foreach my $number ( 1 .. 100 ) {
-        push @f, $cass->query( "INSERT INTO numbers (v) VALUES $number;",
-           CONSISTENCY_QUORUM );
+        push @f, $cass->query( "INSERT INTO numbers (v) VALUES $number" );
      }
      Future->needs_all( @f )->get;
 
-     my $get_stmt = $cass->prepare( "SELECT v FROM numbers;" )->get;
+     my $get_stmt = $cass->prepare( "SELECT v FROM numbers" )->get;
 
-     my ( undef, $result ) = $get_stmt->execute( [], CONSISTENCY_QUORUM )->get;
+     my ( undef, $result ) = $get_stmt->execute( [] )->get;
 
-     foreach my $row ( $result->rows_hash) {
+     foreach my $row ( $result->rows_hash ) {
         say "We have a number " . $row->{v};
      }
 
 DESCRIPTION
-    This module allows use of the `CQLv3' interface of a Cassandra database.
+    This module allows use of the `CQL3' interface of a Cassandra database.
     It fully supports asynchronous operation via IO::Async, allowing both
     direct queries and prepared statements to be managed concurrently, if
     required. Alternatively, as the interface is entirely based on Future
@@ -53,6 +52,14 @@ PARAMETERS
     service => STRING
             Optional. The service name or port number to connect to.
 
+    keyspace => STRING
+            Optional. If set, a `USE keyspace' query will be issued as part
+            of the connect method.
+
+    default_consistency => INT
+            Optional. Default consistency level to use if none is provided
+            to `query' or `execute'.
+
 METHODS
   $f = $cass->connect( %args )
     Connects to the Cassandra node an send the `OPCODE_STARTUP' message. The
@@ -62,6 +69,7 @@ METHODS
 
     host => STRING
     service => STRING
+    keyspace => STRING
             Optional. Overrides the configured values.
 
     A host name is required, either as a named argument or as a configured
@@ -124,6 +132,13 @@ METHODS
     Normally this method is not directly required - instead, use the
     `execute' method on the query object itself, as this will encode the
     parameters correctly.
+
+CONVENIENT WRAPPERS
+    The following wrapper methods all wrap the basic `query' operation.
+
+  $f = $cass->use_keyspace( $keyspace )
+    A convenient shortcut to the `USE $keyspace' query which escapes the
+    keyspace name.
 
 PREPARED QUERIES
     Prepared query objects are returned by `prepare', and have the following

@@ -112,4 +112,27 @@ is( Protocol::CassandraCQL::Frame->new->bytes, "", '->bytes empty' );
    is_deeply( $frame->unpack_string_map, { one => "ONE", two => "TWO" }, '->unpack_string_map' );
 }
 
+# Complete message parsing
+{
+   my $bytes = "\x81\x00\x01\x05\0\0\0\4\x01\x23\x45\x67Tail";
+   my ( $version, $flags, $streamid, $opcode, $frame ) =
+      Protocol::CassandraCQL::Frame->parse( $bytes );
+
+   is( $version, 0x81, '$version from ->parse' );
+   is( $flags,   0x00, '$flags from ->parse' );
+   is( $streamid,   1, '$streamid from ->parse' );
+   is( $opcode,     5, '$opcode from ->parse' );
+
+   is( $frame->unpack_int, 0x01234567, '$frame->unpack_int from ->parse' );
+
+   is( $bytes, "Tail", '$bytes still has tail after ->parse' );
+
+   $frame = Protocol::CassandraCQL::Frame->new
+      ->pack_int( 0x76543210 );
+
+   is_hexstr( $frame->build( 0x01, 0x00, 1, 6 ),
+              "\x01\x00\x01\x06\0\0\0\4\x76\x54\x32\x10",
+              '$frame->build' );
+}
+
 done_testing;

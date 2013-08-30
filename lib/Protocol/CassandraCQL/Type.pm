@@ -8,7 +8,7 @@ package Protocol::CassandraCQL::Type;
 use strict;
 use warnings;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use Carp;
 
@@ -24,7 +24,7 @@ C<Protocol::CassandraCQL::Type> - represents a Cassandra CQL data type
 =head1 DESCRIPTION
 
 Objects in this class represent distinct types that may be found in Cassandra
-CQLv3, either as columns in query result rows, or as bind parameters to
+CQL3, either as columns in query result rows, or as bind parameters to
 prepared statements. It is used by L<Protocol::CassandraCQL::ColumnMeta>.
 
 =cut
@@ -108,6 +108,13 @@ Decodes the given bytestring into perl data.
 
 =cut
 
+=head2 $message = $type->validate( $v )
+
+Validates whether the given perl data is valid for this type. If so, returns
+false. Otherwise, returns an error message explaining why.
+
+=cut
+
 #      if( $typeid == TYPE_CUSTOM ) {
 #         push @col, $frame->unpack_string;
 #      }
@@ -117,27 +124,42 @@ Decodes the given bytestring into perl data.
 
 # Now the codecs
 
+package
+   Protocol::CassandraCQL::Type::_numeric;
+use base qw( Protocol::CassandraCQL::Type );
+use Scalar::Util qw( looks_like_number );
+sub validate { !looks_like_number($_[1]) ? "not a number" : undef }
+
+package
+   Protocol::CassandraCQL::Type::_integral;
+use base qw( Protocol::CassandraCQL::Type::_numeric );
+sub validate { $_[0]->SUPER::validate($_[1]) or
+               $_[1] != int($_[1]) ? "not an integer" : undef }
+
 # ASCII-only bytes
 package Protocol::CassandraCQL::Type::ASCII;
 use base qw( Protocol::CassandraCQL::Type );
-sub encode { $_[1] =~ m/^[\x00-\x7f]*$/ or die "Non-ASCII"; $_[1] }
+sub validate { $_[1] =~ m/[^\x00-\x7f]/ ? "non-ASCII" : undef }
+sub encode { $_[1] }
 sub decode { $_[1] }
 
 # 64-bit integer
 package Protocol::CassandraCQL::Type::BIGINT;
-use base qw( Protocol::CassandraCQL::Type );
+use base qw( Protocol::CassandraCQL::Type::_integral );
 sub encode { pack   "q>", $_[1] }
 sub decode { unpack "q>", $_[1] }
 
 # blob
 package Protocol::CassandraCQL::Type::BLOB;
 use base qw( Protocol::CassandraCQL::Type );
+sub validate { undef }
 sub encode { $_[1] }
 sub decode { $_[1] }
 
 # true/false byte
 package Protocol::CassandraCQL::Type::BOOLEAN;
 use base qw( Protocol::CassandraCQL::Type );
+sub validate { undef }
 sub encode { pack   "C", !!$_[1] }
 sub decode { !!unpack "C", $_[1] }
 
@@ -148,7 +170,7 @@ use base qw( Protocol::CassandraCQL::Type::BIGINT );
 # Not clearly docmuented, but this appears to be an INT decimal shift followed
 # by a VARINT
 package Protocol::CassandraCQL::Type::DECIMAL;
-use base qw( Protocol::CassandraCQL::Type );
+use base qw( Protocol::CassandraCQL::Type::_numeric );
 use Scalar::Util qw( blessed );
 sub encode {
    require Math::BigFloat;
@@ -165,25 +187,26 @@ sub decode {
 
 # IEEE double
 package Protocol::CassandraCQL::Type::DOUBLE;
-use base qw( Protocol::CassandraCQL::Type );
+use base qw( Protocol::CassandraCQL::Type::_numeric );
 sub encode { pack   "d>", $_[1] }
 sub decode { unpack "d>", $_[1] }
 
 # IEEE single
 package Protocol::CassandraCQL::Type::FLOAT;
-use base qw( Protocol::CassandraCQL::Type );
+use base qw( Protocol::CassandraCQL::Type::_numeric );
 sub encode { pack   "f>", $_[1] }
 sub decode { unpack "f>", $_[1] }
 
 # 32-bit integer
 package Protocol::CassandraCQL::Type::INT;
-use base qw( Protocol::CassandraCQL::Type );
+use base qw( Protocol::CassandraCQL::Type::_integral );
 sub encode { pack   "l>", $_[1] }
 sub decode { unpack "l>", $_[1] }
 
 # UTF-8 text
 package Protocol::CassandraCQL::Type::VARCHAR;
 use base qw( Protocol::CassandraCQL::Type );
+sub validate { undef } # TODO: maybe we can check for invalid codepoints?
 sub encode { Encode::encode_utf8 $_[1] }
 sub decode { Encode::decode_utf8 $_[1] }
 
@@ -193,13 +216,15 @@ use base qw( Protocol::CassandraCQL::Type::VARCHAR );
 
 # miliseconds since UNIX epoch as 64bit uint
 package Protocol::CassandraCQL::Type::TIMESTAMP;
-use base qw( Protocol::CassandraCQL::Type );
+use base qw( Protocol::CassandraCQL::Type::_integral );
 sub encode {  pack   "Q>", ($_[1] * 1000) }
 sub decode { (unpack "Q>", $_[1]) / 1000  }
 
-# UUID is just a hex string
+# UUID is just a hex string - accept 32 hex digits, hypens optional
 package Protocol::CassandraCQL::Type::UUID;
 use base qw( Protocol::CassandraCQL::Type );
+sub validate { ( my $hex = $_[1] ) =~ s/-//g;
+               $hex !~ m/^[0-9A-F]{32}$/i ? "expected 32 hex digits" : undef }
 sub encode { ( my $hex = $_[1] ) =~ s/-//g; pack "H32", $hex }
 sub decode { join "-", unpack "H8 H4 H4 H4 H12", $_[1] }
 
@@ -209,7 +234,7 @@ use base qw( Protocol::CassandraCQL::Type::UUID );
 # Arbitrary-precision 2s-complement signed integer
 # Math::BigInt doesn't handle signed, but we can mangle it
 package Protocol::CassandraCQL::Type::VARINT;
-use base qw( Protocol::CassandraCQL::Type );
+use base qw( Protocol::CassandraCQL::Type::_integral );
 use Scalar::Util qw( blessed );
 sub encode {
    require Math::BigInt;
@@ -243,7 +268,14 @@ sub decode {
    }
 }
 
-# TODO: INET
+# 4 (AF_INET) or 16 (AF_INET6) byte address
+package Protocol::CassandraCQL::Type::INET;
+use base qw( Protocol::CassandraCQL::Type );
+sub validate { length($_[1]) ==  4 and return;
+               length($_[1]) == 16 and return;
+               "expected 4 bytes (AF_INET) or 16 bytes (AF_INET6)" }
+sub encode { $_[1] }
+sub decode { $_[1] }
 
 =head1 COLLECTION TYPES
 
@@ -276,20 +308,29 @@ sub from_name {
 }
 sub element_type { $_[0][0] }
 sub name { $_[0]->SUPER::name . "<" . $_[0][0]->name . ">" }
+sub validate {
+   my $l = $_[1];
+   eval { @$l } or return "not an ARRAY";
+   my $etype = $_[0][0];
+   my $e; $e = $etype->validate( $l->[$_] ) and return "[$_]: $e" for 0 .. $#$l;
+   undef;
+}
 sub encode {
    my $l = $_[1];
+   my $etype = $_[0][0];
    my $f = Protocol::CassandraCQL::Frame->new
       ->pack_short( scalar @$l );
    foreach my $i ( 0 .. $#$l ) {
-      $f->pack_short_bytes( $_[0][0]->encode( $l->[$i] ) );
+      $f->pack_short_bytes( $etype->encode( $l->[$i] ) );
    }
    $f->bytes
 }
 sub decode {
    local $_;
+   my $etype = $_[0][0];
    my $f = Protocol::CassandraCQL::Frame->new( $_[1] );
    my $n = $f->unpack_short;
-   return [ map { $_[0][0]->decode( $f->unpack_short_bytes ) } 1 .. $n ]
+   return [ map { $etype->decode( $f->unpack_short_bytes ) } 1 .. $n ]
 }
 
 package Protocol::CassandraCQL::Type::MAP;
@@ -312,22 +353,33 @@ sub from_name {
 sub key_type   { $_[0][0] }
 sub value_type { $_[0][1] }
 sub name { $_[0]->SUPER::name . "<" . $_[0][0]->name . "," . $_[0][1]->name . ">" }
+sub validate {
+   my $m = $_[1];
+   eval { %$m } or return "not a HASH";
+   my $vtype = $_[0][1];
+   my $e; $e = $vtype->validate( $m->{$_} ) and return "{$_}: $e" for keys %$m;
+   undef;
+}
 sub encode {
    my $m = $_[1];
+   my $ktype = $_[0][0];
+   my $vtype = $_[0][1];
    my $f = Protocol::CassandraCQL::Frame->new
       ->pack_short( scalar keys %$m );
    foreach my $k ( keys %$m ) {
-      $f->pack_short_bytes( $_[0][0]->encode( $k ) );
-      $f->pack_short_bytes( $_[0][1]->encode( $m->{$k} ) );
+      $f->pack_short_bytes( $ktype->encode( $k ) );
+      $f->pack_short_bytes( $vtype->encode( $m->{$k} ) );
    }
    $f->bytes
 }
 sub decode {
    local $_;
+   my $ktype = $_[0][0];
+   my $vtype = $_[0][1];
    my $f = Protocol::CassandraCQL::Frame->new( $_[1] );
    my $n = $f->unpack_short;
-   return { map { $_[0][0]->decode( $f->unpack_short_bytes ),
-                  $_[0][1]->decode( $f->unpack_short_bytes ) } 1 .. $n }
+   return { map { $ktype->decode( $f->unpack_short_bytes ),
+                  $vtype->decode( $f->unpack_short_bytes ) } 1 .. $n }
 }
 
 # We just represent a SET as a LIST - use an ARRAY of elements
@@ -349,7 +401,7 @@ To or from a numeric scalar.
 
 =head2 BLOB
 
-To or from an opaque string scalar or bytes.
+To or from an opaque string scalar of bytes.
 
 =head2 DECIMAL
 
@@ -357,7 +409,8 @@ To or from an instance of L<Math::BigFloat>, or from a regular numeric scalar.
 
 =head2 TIMESTAMP
 
-To or from a numeric scalar, representing miliseconds since UNIX epoch.
+To or from a numeric scalar, representing a UNIX epoch timestamp as a float to
+the nearest milisecond.
 
 =head2 UUID, TIMEUUID
 

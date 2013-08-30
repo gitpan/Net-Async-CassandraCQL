@@ -9,7 +9,9 @@ use strict;
 use warnings;
 use base qw( Protocol::CassandraCQL::ColumnMeta );
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
+
+use Carp;
 
 use Protocol::CassandraCQL qw( :types );
 
@@ -77,6 +79,8 @@ sub rowbytes
    my $self = shift;
    my ( $idx ) = @_;
 
+   croak "No such row $idx" unless $idx >= 0 and $idx < @{ $self->{rows} };
+
    return @{ $self->{rows}[$idx] };
 }
 
@@ -132,6 +136,42 @@ sub rows_hash
 {
    my $self = shift;
    return map { $self->row_hash( $_ ) } 0 .. $self->rows-1;
+}
+
+=head2 $map = $result->rowmap_array( $keyidx )
+
+Returns a HASH reference mapping keys to rows deccoded as ARRAY references.
+C<$keyidx> gives the column index of the value to use as the key in the
+returned map.
+
+=cut
+
+sub rowmap_array
+{
+   my $self = shift;
+   my ( $keyidx ) = @_;
+
+   croak "No such column $keyidx" unless $keyidx >= 0 and $keyidx < $self->columns;
+
+   return { map { $_->[$keyidx] => $_ } $self->rows_array };
+}
+
+=head2 $map = $result->rowmap_hash( $keyname )
+
+Returns a HASH reference mapping keys to rows decoded as HASH references.
+C<$keyname> gives the column shortname of the value to use as the key in the
+returned map.
+
+=cut
+
+sub rowmap_hash
+{
+   my $self = shift;
+   my ( $keyname ) = @_;
+
+   croak "No such column '$keyname'" unless defined $self->find_column( $keyname );
+
+   return { map { $_->{$keyname} => $_ } $self->rows_hash };
 }
 
 =head1 SPONSORS
