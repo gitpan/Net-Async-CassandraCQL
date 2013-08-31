@@ -9,16 +9,20 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 use base qw( IO::Async::Protocol::Stream );
 
 use Carp;
 
-use Protocol::CassandraCQL qw( :opcodes :results );
+use Future 0.13;
+
+use Protocol::CassandraCQL qw( :opcodes :results :consistencies );
 use Protocol::CassandraCQL::Frame;
 use Protocol::CassandraCQL::ColumnMeta;
 use Protocol::CassandraCQL::Result;
+
+use Net::Async::CassandraCQL::Query;
 
 use constant DEFAULT_CQL_PORT => 9042;
 
@@ -127,6 +131,46 @@ sub configure
 
 =cut
 
+=head2 $str = $cass->quote( $str )
+
+Quotes a string argument suitable for inclusion in an immediate CQL query
+string.
+
+In general, it is better to use a prepared query and pass the value as an
+execute parameter though.
+
+=cut
+
+sub quote
+{
+   my $self = shift;
+   my ( $str ) = @_;
+
+   # CQL's 'quoting' handles any character except quote marks, which have to
+   # be doubled
+   $str =~ s/'/''/g;
+   return qq('$str');
+}
+
+=head2 $str = $cass->quote_identifier( $str )
+
+Quotes an identifier name suitable for inclusion in a CQL query string.
+
+=cut
+
+sub quote_identifier
+{
+   my $self = shift;
+   my ( $str ) = @_;
+
+   return $str if $str =~ m/^[a-z_][a-z0-9_]+$/;
+
+   # CQL's "quoting" handles any character except quote marks, which have to
+   # be doubled
+   $str =~ s/"/""/g;
+   return qq("$str");
+}
+
 # function
 sub _decode_result
 {
@@ -190,7 +234,7 @@ sub connect
       $self->SUPER::connect( %args )->on_fail( sub { undef $self->{connect_f} } ) )
       ->and_then( sub {
          $self->startup
-      })->then( sub {
+      })->and_then( sub {
          my $f = shift;
          return $f unless defined $keyspace;
 
@@ -334,7 +378,7 @@ sub startup
 
    $self->send_message( OPCODE_STARTUP,
       Protocol::CassandraCQL::Frame->new->pack_string_map( {
-            CQL_VERSION => "3.0.0",
+            CQL_VERSION => "3.0.5",
       } )
    )->then( sub {
       my ( $op, $response ) = @_;
@@ -409,6 +453,28 @@ sub query
       my ( $op, $response ) = @_;
       $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
       return _decode_result( $response );
+   });
+}
+
+=head2 $f = $cass->query_rows( $cql, $consistency )
+
+A shortcut wrapper for C<query> which expects a C<rows> result and returns it
+directly. Any other result is treated as an error. The returned Future returns
+a C<Protocol::CassandraCQL::Result> directly
+
+ $result = $f->get
+
+=cut
+
+sub query_rows
+{
+   my $self = shift;
+   my ( $cql, $consistency ) = @_;
+
+   $self->query( $cql, $consistency )->then( sub {
+      my ( $type, $result ) = @_;
+      $type eq "rows" or Future->new->fail( "Expected 'rows' result" );
+      Future->new->done( $result );
    });
 }
 
@@ -489,87 +555,84 @@ sub use_keyspace
    my $self = shift;
    my ( $keyspace ) = @_;
 
-   # CQL's "quoting" handles any character except quote marks, which have to
-   # be doubled
-   $keyspace =~ s/"/""/g;
-
-   $self->query( qq(USE "$keyspace"), 0 );
+   $self->query( "USE " . $self->quote_identifier( $keyspace ), CONSISTENCY_ANY );
 }
 
-package # hide from CPAN
-   Net::Async::CassandraCQL::Query;
-use base qw( Protocol::CassandraCQL::ColumnMeta );
-use Carp;
+=head2 $f = $cass->schema_keyspaces
 
-=head1 PREPARED QUERIES
+A shortcut to a C<SELECT> query on C<system.schema_keyspaces>, which returns a
+result object listing all the keyspaces.
 
-Prepared query objects are returned by C<prepare>, and have the following
-methods, in addition to those of its parent class,
-L<Protocol::CassandraCQL::ColumnMeta>.
+ ( $result ) = $f->get
+
+Exact details of the returned columns will depend on the Cassandra version,
+but the result should at least be keyed by the first column, called
+C<keyspace_name>.
+
+ my $keyspaces = $result->rowmap_hash( "keyspace_name" )
 
 =cut
 
-sub from_frame
-{
-   my $class = shift;
-   my ( $cassandra, $response ) = @_;
-
-   my $id = $response->unpack_short_bytes;
-
-   my $self = $class->SUPER::from_frame( $response );
-
-   $self->{cassandra} = $cassandra;
-   $self->{id} = $id;
-
-   return $self;
-}
-
-=head2 $id = $query->id
-
-Returns the query ID.
-
-=cut
-
-sub id
+sub schema_keyspaces
 {
    my $self = shift;
-   return $self->{id};
+
+   $self->query_rows(
+      "SELECT * FROM system.schema_keyspaces",
+      CONSISTENCY_ONE
+   );
 }
 
-=head2 $f = $query->execute( $data, $consistency )
+=head2 $f = $cass->schema_columnfamilies( $keyspace )
 
-Executes the query on the Cassandra connection object that created it,
-returning a future yielding the result the same way as the C<query> or
-C<execute> methods.
+A shortcut to a C<SELECT> query on C<system.schema_columnfamilies>, which
+returns a result object listing all the columnfamilies of the given keyspace.
 
-The contents of the C<$data> reference will be encoded according to the types
-given in the underlying column metadata. C<$data> may be given as a positional
-ARRAY reference, or a named HASH reference where the keys give column names.
+ ( $result ) = $f->get
+
+Exact details of the returned columns will depend on the Cassandra version,
+but the result should at least be keyed by the first column, called
+C<columnfamily_name>.
+
+ my $columnfamilies = $result->rowmap_hash( "columnfamily_name" )
 
 =cut
 
-sub execute
+sub schema_columnfamilies
 {
    my $self = shift;
-   my ( $data, $consistency ) = @_;
+   my ( $keyspace ) = @_;
 
-   my @data;
-   if( ref $data eq "ARRAY" ) {
-      @data = @$data;
-   }
-   elsif( ref $data eq "HASH" ) {
-      @data = ( undef ) x $self->columns;
-      foreach my $name ( keys %$data ) {
-         my $idx = $self->find_column( $name );
-         defined $idx or croak "Unknown bind column name '$name'";
-         defined $data[$idx] and croak "Cannot bind column ".$self->column_name($idx)." twice";
-         $data[$idx] = $data->{$name};
-      }
-   }
+   $self->query_rows(
+      "SELECT * FROM system.schema_columnfamilies WHERE keyspace_name = " . $self->quote( $keyspace ),
+      CONSISTENCY_ONE
+   );
+}
 
-   my @bytes = $self->encode_data( @data );
+=head2 $f = $cass->schema_columns( $keyspace, $columnfamily )
 
-   return $self->{cassandra}->execute( $self->id, \@bytes, $consistency );
+A shortcut to a C<SELECT> query on C<system.schema_columns>, which returns a
+result object listing all the columns of the given columnfamily.
+
+ ( $result ) = $f->get
+
+Exact details of the returned columns will depend on the Cassandra version,
+but the result should at least be keyed by the first column, called
+C<column_name>.
+
+ my $columns = $result->rowmap_hash( "column_name" )
+
+=cut
+
+sub schema_columns
+{
+   my $self = shift;
+   my ( $keyspace, $columnfamily ) = @_;
+
+   $self->query_rows(
+      "SELECT * FROM system.schema_columns WHERE keyspace_name = " . $self->quote( $keyspace ) . " AND columnfamily_name = " . $self->quote( $columnfamily ),
+      CONSISTENCY_ONE,
+   );
 }
 
 =head1 TODO
@@ -583,10 +646,6 @@ Handle OPCODE_AUTHENTICATE and OPCODE_REGISTER
 =item *
 
 Support frame compression
-
-=item *
-
-Move L<Protocol::CassandraCQL> to its own distribution
 
 =item *
 

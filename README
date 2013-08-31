@@ -61,6 +61,16 @@ PARAMETERS
             to `query' or `execute'.
 
 METHODS
+  $str = $cass->quote( $str )
+    Quotes a string argument suitable for inclusion in an immediate CQL
+    query string.
+
+    In general, it is better to use a prepared query and pass the value as
+    an execute parameter though.
+
+  $str = $cass->quote_identifier( $str )
+    Quotes an identifier name suitable for inclusion in a CQL query string.
+
   $f = $cass->connect( %args )
     Connects to the Cassandra node an send the `OPCODE_STARTUP' message. The
     returned Future will yield nothing on success.
@@ -117,6 +127,13 @@ METHODS
     For other queries, such as `INSERT', `UPDATE' and `DELETE', the future
     returns nothing.
 
+  $f = $cass->query_rows( $cql, $consistency )
+    A shortcut wrapper for `query' which expects a `rows' result and returns
+    it directly. Any other result is treated as an error. The returned
+    Future returns a `Protocol::CassandraCQL::Result' directly
+
+     $result = $f->get
+
   $f = $cass->prepare( $cql )
     Prepares a CQL query for later execution. On success, the returned
     Future yields an instance of a prepared query object (see below).
@@ -140,30 +157,47 @@ CONVENIENT WRAPPERS
     A convenient shortcut to the `USE $keyspace' query which escapes the
     keyspace name.
 
-PREPARED QUERIES
-    Prepared query objects are returned by `prepare', and have the following
-    methods, in addition to those of its parent class,
-    Protocol::CassandraCQL::ColumnMeta.
+  $f = $cass->schema_keyspaces
+    A shortcut to a `SELECT' query on `system.schema_keyspaces', which
+    returns a result object listing all the keyspaces.
 
-  $id = $query->id
-    Returns the query ID.
+     ( $result ) = $f->get
 
-  $f = $query->execute( $data, $consistency )
-    Executes the query on the Cassandra connection object that created it,
-    returning a future yielding the result the same way as the `query' or
-    `execute' methods.
+    Exact details of the returned columns will depend on the Cassandra
+    version, but the result should at least be keyed by the first column,
+    called `keyspace_name'.
 
-    The contents of the `$data' reference will be encoded according to the
-    types given in the underlying column metadata. `$data' may be given as a
-    positional ARRAY reference, or a named HASH reference where the keys
-    give column names.
+     my $keyspaces = $result->rowmap_hash( "keyspace_name" )
+
+  $f = $cass->schema_columnfamilies( $keyspace )
+    A shortcut to a `SELECT' query on `system.schema_columnfamilies', which
+    returns a result object listing all the columnfamilies of the given
+    keyspace.
+
+     ( $result ) = $f->get
+
+    Exact details of the returned columns will depend on the Cassandra
+    version, but the result should at least be keyed by the first column,
+    called `columnfamily_name'.
+
+     my $columnfamilies = $result->rowmap_hash( "columnfamily_name" )
+
+  $f = $cass->schema_columns( $keyspace, $columnfamily )
+    A shortcut to a `SELECT' query on `system.schema_columns', which returns
+    a result object listing all the columns of the given columnfamily.
+
+     ( $result ) = $f->get
+
+    Exact details of the returned columns will depend on the Cassandra
+    version, but the result should at least be keyed by the first column,
+    called `column_name'.
+
+     my $columns = $result->rowmap_hash( "column_name" )
 
 TODO
     *       Handle OPCODE_AUTHENTICATE and OPCODE_REGISTER
 
     *       Support frame compression
-
-    *       Move Protocol::CassandraCQL to its own distribution
 
     *       Allow storing multiple Cassandra node hostnames and perform some
             kind of balancing or failover of connections.

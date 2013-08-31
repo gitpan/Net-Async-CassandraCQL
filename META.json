@@ -16,7 +16,6 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "IO::Async::Loop" : "0",
             "IO::Async::Test" : "0",
             "Test::Fatal" : "0",
             "Test::HexString" : "0",
@@ -25,112 +24,21 @@
       },
       "runtime" : {
          "requires" : {
-            "Encode" : "0",
+            "Future" : "0.13",
+            "IO::Async::Loop" : "0.54",
             "IO::Async::Protocol::Stream" : "0",
-            "Math::BigInt" : "0"
+            "Protocol::CassandraCQL" : "0.04"
          }
       }
    },
    "provides" : {
       "Net::Async::CassandraCQL" : {
          "file" : "lib/Net/Async/CassandraCQL.pm",
-         "version" : "0.03"
+         "version" : "0.04"
       },
-      "Protocol::CassandraCQL" : {
-         "file" : "lib/Protocol/CassandraCQL.pm",
-         "version" : "0.03"
-      },
-      "Protocol::CassandraCQL::ColumnMeta" : {
-         "file" : "lib/Protocol/CassandraCQL/ColumnMeta.pm",
-         "version" : "0.03"
-      },
-      "Protocol::CassandraCQL::Frame" : {
-         "file" : "lib/Protocol/CassandraCQL/Frame.pm",
-         "version" : "0.03"
-      },
-      "Protocol::CassandraCQL::Result" : {
-         "file" : "lib/Protocol/CassandraCQL/Result.pm",
-         "version" : "0.03"
-      },
-      "Protocol::CassandraCQL::Type" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : "0.03"
-      },
-      "Protocol::CassandraCQL::Type::ASCII" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::BIGINT" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::BLOB" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::BOOLEAN" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::COUNTER" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::DECIMAL" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::DOUBLE" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::FLOAT" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::INET" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::INT" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::LIST" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::MAP" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::SET" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::TEXT" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::TIMESTAMP" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::TIMEUUID" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::UUID" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::VARCHAR" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
-      },
-      "Protocol::CassandraCQL::Type::VARINT" : {
-         "file" : "lib/Protocol/CassandraCQL/Type.pm",
-         "version" : 0
+      "Net::Async::CassandraCQL::Query" : {
+         "file" : "lib/Net/Async/CassandraCQL/Query.pm",
+         "version" : "0.04"
       }
    },
    "release_status" : "stable",
@@ -139,5 +47,5 @@
          "http://dev.perl.org/licenses/"
       ]
    },
-   "version" : "0.03"
+   "version" : "0.04"
 }

@@ -35,7 +35,7 @@ $loop->add( $cass );
    # OPCODE_STARTUP
    is_hexstr( $stream,
               "\x01\x00\x01\x01\0\0\0\x16" .
-                 "\x00\x01" . "\x00\x0bCQL_VERSION\x00\x053.0.0",
+                 "\x00\x01" . "\x00\x0bCQL_VERSION\x00\x053.0.5",
               'stream after ->startup' );
 
    # OPCODE_READY

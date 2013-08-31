@@ -1,5 +1,11 @@
 Revision history for Net-Async-CassandraCQL
 
+0.04    CHANGES:
+         * Moved Protocol::CassandraCQL to its own distribution
+         * Added ->query_rows, ->quote, ->quote_identifier
+         * Added some convenience methods to query schema metadata
+           (schema_keyspaces, schema_columnfamilies, schema_columns)
+
 0.03    CHANGES:
          * Allow setting a default consistency level to avoid needing one at
            every call to ->query or ->execute
