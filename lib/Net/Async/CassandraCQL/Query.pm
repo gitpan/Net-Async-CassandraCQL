@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use base qw( Protocol::CassandraCQL::ColumnMeta );
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 use Carp;
 

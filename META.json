@@ -4,7 +4,7 @@
       "Paul Evans <leonerd@leonerd.org.uk>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "Module::Build version 0.4005, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "Module::Build version 0.4007, CPAN::Meta::Converter version 2.132140",
    "license" : [
       "perl_5"
    ],
@@ -27,18 +27,18 @@
             "Future" : "0.13",
             "IO::Async::Loop" : "0.54",
             "IO::Async::Protocol::Stream" : "0",
-            "Protocol::CassandraCQL" : "0.04"
+            "Protocol::CassandraCQL" : "0.05"
          }
       }
    },
    "provides" : {
       "Net::Async::CassandraCQL" : {
          "file" : "lib/Net/Async/CassandraCQL.pm",
-         "version" : "0.04"
+         "version" : "0.05"
       },
       "Net::Async::CassandraCQL::Query" : {
          "file" : "lib/Net/Async/CassandraCQL/Query.pm",
-         "version" : "0.04"
+         "version" : "0.05"
       }
    },
    "release_status" : "stable",
@@ -47,5 +47,5 @@
          "http://dev.perl.org/licenses/"
       ]
    },
-   "version" : "0.04"
+   "version" : "0.05"
 }

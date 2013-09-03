@@ -1,0 +1,48 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use IO::Async::Loop;
+use Net::Async::CassandraCQL;
+
+use Getopt::Long;
+use Future::Utils qw( fmap_void );
+use Socket qw( getnameinfo NI_NUMERICHOST NI_NUMERICSERV );
+
+GetOptions(
+   'host|h=s' => \(my $HOST = "localhost"),
+   'user|u=s' => \my $USERNAME,
+   'pass|p=s' => \my $PASSWORD,
+) or exit 1;
+
+my $loop = IO::Async::Loop->new;
+
+my $cass = Net::Async::CassandraCQL->new(
+   host     => $HOST,
+   username => $USERNAME,
+   password => $PASSWORD,
+);
+$loop->add( $cass );
+
+$cass->connect->get;
+
+$cass->configure( on_status_change => sub {
+   my $self = shift;
+   my ( $status, $nodeaddr ) = @_;
+
+   my ( $err, $host, $port ) = getnameinfo( $nodeaddr, NI_NUMERICHOST|NI_NUMERICSERV );
+   die "$err" if $err;
+
+   print "STATUS_CHANGE $status $host:$port\n";
+});
+
+$cass->configure( on_event => sub {
+   my $self = shift;
+
+   print STDERR "EVENT: @_\n";
+});
+
+$cass->register( [qw( TOPOLOGY_CHANGE STATUS_CHANGE SCHEMA_CHANGE )] )->get;
+
+$loop->run;

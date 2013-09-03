@@ -45,6 +45,35 @@ $loop->add( $cass );
 
    is_deeply( [ $f->get ], [],
               '->startup->get returns nothing' );
+
+   $cass->configure( username => "the-user", password => "the-pass" );
+
+   $f = $cass->startup;
+
+   $stream = "";
+   wait_for_stream { length $stream >= 8 + 22 } $S2 => $stream;
+
+   # OPCODE_AUTHENTICATE
+   $S2->syswrite( "\x81\x00\x01\x03\0\0\0\x31" .
+      "\0\x2forg.apache.cassandra.auth.PasswordAuthenticator" );
+
+   $stream = "";
+   wait_for_stream { length $stream >= 8 + 0 } $S2 => $stream;
+
+   # OPCODE_CREDENTIALS
+   is_hexstr( $stream,
+              "\x01\x00\x01\x04\0\0\0\x2a" .
+                 "\0\2\0\x08password\0\x08the-pass" .
+                     "\0\x08username\0\x08the-user",
+              'stream has credentials after authentication required' );
+
+   # OPCODE_READY
+   $S2->syswrite( "\x81\x00\x01\x02\0\0\0\0" );
+
+   wait_for { $f->is_ready };
+
+   is_deeply( [ $f->get ], [],
+              '->startup->get returns nothing after authentication' );
 }
 
 # ->options

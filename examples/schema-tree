@@ -6,12 +6,21 @@ use warnings;
 use IO::Async::Loop;
 use Net::Async::CassandraCQL;
 
+use Getopt::Long;
 use Future::Utils qw( fmap_void );
+
+GetOptions(
+   'host|h=s' => \(my $HOST = "localhost"),
+   'user|u=s' => \my $USERNAME,
+   'pass|p=s' => \my $PASSWORD,
+) or exit 1;
 
 my $loop = IO::Async::Loop->new;
 
 my $cass = Net::Async::CassandraCQL->new(
-   host => "localhost",
+   host     => $HOST,
+   username => $USERNAME,
+   password => $PASSWORD,
 );
 $loop->add( $cass );
 

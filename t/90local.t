@@ -11,8 +11,8 @@ BEGIN {
    # create its own keyspace to work in.
    #
    # It is disabled by default, but to enable it create a t/local.yaml file
-   # containing the host, keyspace, and optionally service port number to
-   # connect to.
+   # containing the host, keyspace, and optionally username, password and
+   # service port number to connect to.
    -e "t/local.yaml" or plan skip_all => "No t/local.yaml config";
    require YAML;
    %CONFIG = %{ YAML::LoadFile( "t/local.yaml" ) };
@@ -31,7 +31,11 @@ use Protocol::CassandraCQL qw( CONSISTENCY_ONE );
 my $loop = IO::Async::Loop->new();
 testing_loop( $loop );
 
-my $cass = Net::Async::CassandraCQL->new( default_consistency => CONSISTENCY_ONE );
+my $cass = Net::Async::CassandraCQL->new(
+   username => $CONFIG{username},
+   password => $CONFIG{password},
+   default_consistency => CONSISTENCY_ONE,
+);
 $loop->add( $cass );
 
 $cass->connect(

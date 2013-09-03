@@ -1,5 +1,6 @@
 Build.PL
 Changes
+examples/cassandra-watch
 examples/schema-tree
 lib/Net/Async/CassandraCQL.pm
 lib/Net/Async/CassandraCQL/Query.pm
@@ -14,5 +15,6 @@ t/01quote.t
 t/10send_message.t
 t/11messages.t
 t/12queue.t
+t/13events.t
 t/90local.t
 t/99pod.t

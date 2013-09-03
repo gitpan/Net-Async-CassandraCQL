@@ -43,6 +43,22 @@ DESCRIPTION
     It is based on Protocol::CassandraCQL, which more completely documents
     the behaviours and limits of its ability to communicate with Cassandra.
 
+EVENTS
+  on_event $name, @args
+    A registered event occurred. `@args' will depend on the event name. Each
+    is also available as its own event, with the name in lowercase. If the
+    event is not one of the types recognised below, `@args' will contain the
+    actual Protocol::CassandraCQL::Frame object.
+
+  on_topology_change $type, $node
+    The cluster topology has changed. `$node' is a packed socket address.
+
+  on_status_change $status, $node
+    The node's status has changed. `$node' is a packed socket address.
+
+  on_schema_change $type, $keyspace, $table
+    A keyspace or table schema has changed.
+
 PARAMETERS
     The following named parameters may be passed to `new' or `configure':
 
@@ -51,6 +67,11 @@ PARAMETERS
 
     service => STRING
             Optional. The service name or port number to connect to.
+
+    username => STRING
+    password => STRING
+            Optional. Authentication details to use for
+            `PasswordAuthenticator'.
 
     keyspace => STRING
             Optional. If set, a `USE keyspace' query will be issued as part
@@ -150,6 +171,12 @@ METHODS
     `execute' method on the query object itself, as this will encode the
     parameters correctly.
 
+  $f = $cass->register( $events )
+    Registers the connection's interest in receiving events of the types
+    given in the ARRAY reference. Event names may be `TOPOLOGY_CHANGE',
+    `STATUS_CHANGE' or `SCHEMA_CHANGE'. On success, the returned Future
+    yields nothing.
+
 CONVENIENT WRAPPERS
     The following wrapper methods all wrap the basic `query' operation.
 
@@ -195,8 +222,6 @@ CONVENIENT WRAPPERS
      my $columns = $result->rowmap_hash( "column_name" )
 
 TODO
-    *       Handle OPCODE_AUTHENTICATE and OPCODE_REGISTER
-
     *       Support frame compression
 
     *       Allow storing multiple Cassandra node hostnames and perform some
