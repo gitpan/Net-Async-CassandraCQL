@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use base qw( Protocol::CassandraCQL::ColumnMeta );
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 use Carp;
 
@@ -31,14 +31,29 @@ This is a subclass of L<Protocol::CassandraCQL::ColumnMeta>.
 sub from_frame
 {
    my $class = shift;
-   my ( $cassandra, $response ) = @_;
+   my ( $cassandra, $cql, $response ) = @_;
 
    my $id = $response->unpack_short_bytes;
 
    my $self = $class->SUPER::from_frame( $response );
 
    $self->{cassandra} = $cassandra;
-   $self->{id} = $id;
+   $self->{cql}       = $cql;
+   $self->{id}        = $id;
+
+   return $self;
+}
+
+sub new
+{
+   my $class = shift;
+   my %args = @_;
+
+   my $self = $class->SUPER::new( %args );
+
+   $self->{cassandra} = $args{cassandra};
+   $self->{cql}       = $args{cql};
+   $self->{id}        = $args{id};
 
    return $self;
 }
@@ -59,7 +74,19 @@ sub id
    return $self->{id};
 }
 
-=head2 $f = $query->execute( $data, $consistency )
+=head2 $cql = $query->cql
+
+Returns the original query string used to prepare the query.
+
+=cut
+
+sub cql
+{
+   my $self = shift;
+   return $self->{cql};
+}
+
+=head2 $query->execute( $data, $consistency ) ==> ( $type, $result )
 
 Executes the query on the Cassandra connection object that created it,
 returning a future yielding the result the same way as the C<query> or

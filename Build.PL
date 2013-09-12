@@ -6,16 +6,20 @@ use Module::Build;
 my $build = Module::Build->new(
    module_name => 'Net::Async::CassandraCQL',
    requires => {
-      'Future' => '0.13',
+      'Compress::Snappy' => 0,
+      'Future' => '0.17', # immediate bugfixes
       'IO::Async::Loop' => '0.54', # ->connect returns Future
       'IO::Async::Protocol::Stream' => 0,
-      'Protocol::CassandraCQL' => '0.05', # ->unpack_inet
+      'IO::Socket::IP' => 0,
+      'Protocol::CassandraCQL' => '0.07', # parse_frame/build_frame functions
    },
    build_requires => {
       'IO::Async::Test' => 0,
       'Test::HexString' => 0,
       'Test::Fatal' => 0,
+      'Test::Identity' => 0,
       'Test::More' => '0.88', # done_testing
+      'Test::Refcount' => 0,
    },
    auto_configure_requires => 0, # Don't add M::B to configure_requires
    license => 'perl',

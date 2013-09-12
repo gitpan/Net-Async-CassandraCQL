@@ -11,7 +11,7 @@ use IO::Async::OS;
 use IO::Async::Loop;
 use IO::Async::Stream;
 
-use Net::Async::CassandraCQL;
+use Net::Async::CassandraCQL::Connection;
 use Protocol::CassandraCQL qw( CONSISTENCY_ANY CONSISTENCY_ONE CONSISTENCY_TWO );
 
 my $loop = IO::Async::Loop->new();
@@ -19,23 +19,27 @@ testing_loop( $loop );
 
 my ( $S1, $S2 ) = IO::Async::OS->socketpair() or die "Cannot create socket pair - $!";
 
-my $cass = Net::Async::CassandraCQL->new(
+my $conn = Net::Async::CassandraCQL::Connection->new(
    transport => IO::Async::Stream->new( handle => $S1 )
 );
 
-$loop->add( $cass );
+$loop->add( $conn );
 
 # ->startup
 {
-   my $f = $cass->startup;
+   my $f = $conn->startup;
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 22 } $S2 => $stream;
 
    # OPCODE_STARTUP
+   # Since this map will contain 2 elements, we'll have to detect the order
+   # and supply the appropriate bytestring
    is_hexstr( $stream,
-              "\x01\x00\x01\x01\0\0\0\x16" .
-                 "\x00\x01" . "\x00\x0bCQL_VERSION\x00\x053.0.5",
+              "\x01\x00\x01\x01\0\0\0\x2b" .
+                 "\x00\x02" . ( $stream =~ m/CQL_VERSION.*COMPRESSION/
+                    ? "\x00\x0bCQL_VERSION\x00\x053.0.5\x00\x0bCOMPRESSION\x00\x06Snappy"
+                    : "\x00\x0bCOMPRESSION\x00\x06Snappy\x00\x0bCQL_VERSION\x00\x053.0.5" ),
               'stream after ->startup' );
 
    # OPCODE_READY
@@ -46,9 +50,9 @@ $loop->add( $cass );
    is_deeply( [ $f->get ], [],
               '->startup->get returns nothing' );
 
-   $cass->configure( username => "the-user", password => "the-pass" );
+   $conn->configure( username => "the-user", password => "the-pass" );
 
-   $f = $cass->startup;
+   $f = $conn->startup;
 
    $stream = "";
    wait_for_stream { length $stream >= 8 + 22 } $S2 => $stream;
@@ -78,7 +82,7 @@ $loop->add( $cass );
 
 # ->options
 {
-   my $f = $cass->options;
+   my $f = $conn->options;
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 } $S2 => $stream;
@@ -102,7 +106,7 @@ $loop->add( $cass );
 
 # ->query returning void
 {
-   my $f = $cass->query( "INSERT INTO things (name) VALUES ('thing')", CONSISTENCY_ANY );
+   my $f = $conn->query( "INSERT INTO things (name) VALUES ('thing')", CONSISTENCY_ANY );
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 48 } $S2 => $stream;
@@ -124,7 +128,7 @@ $loop->add( $cass );
 
 # ->query returning rows
 {
-   my $f = $cass->query( "SELECT a,b FROM c", CONSISTENCY_ONE );
+   my $f = $conn->query( "SELECT a,b FROM c", CONSISTENCY_ONE );
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 23 } $S2 => $stream;
@@ -153,7 +157,7 @@ $loop->add( $cass );
 
 # ->query returning set_keyspace
 {
-   my $f = $cass->query( "USE test", CONSISTENCY_ANY );
+   my $f = $conn->query( "USE test", CONSISTENCY_ANY );
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 12 } $S2 => $stream;
@@ -175,7 +179,7 @@ $loop->add( $cass );
 
 # ->query returning schema_change
 {
-   my $f = $cass->query( "DROP TABLE users", CONSISTENCY_ANY );
+   my $f = $conn->query( "DROP TABLE users", CONSISTENCY_ANY );
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 20 } $S2 => $stream;
@@ -195,30 +199,9 @@ $loop->add( $cass );
               '->query DROP TABLE returns schema change' );
 }
 
-# ->query using default_consistency
-{
-   $cass->configure( default_consistency => CONSISTENCY_TWO );
-
-   my $f = $cass->query( "SELECT * FROM things" );
-
-   my $stream = "";
-   wait_for_stream { length $stream >= 8 + 26 } $S2 => $stream;
-
-   # OPCODE_QUERY
-   is_hexstr( $stream,
-              "\x01\x00\x01\x07\0\0\0\x1a" .
-                 "\0\0\0\x14SELECT * FROM things\0\2",
-              'stream after ->query using default_consistency' );
-
-   # OPCODE_RESULT - void but we don't care
-   $S2->syswrite( "\x81\x00\x01\x08\0\0\0\4\0\0\0\0" );
-
-   wait_for { $f->is_ready };
-}
-
 # ->prepare and ->execute
 {
-   my $f = $cass->prepare( "INSERT INTO t (f) = (?)" );
+   my $f = $conn->prepare( "INSERT INTO t (f) = (?)" );
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 27 } $S2 => $stream;
@@ -238,12 +221,9 @@ $loop->add( $cass );
 
    my $query = $f->get;
    is( $query->id, "0123456789ABCDEF", '$query->id after ->prepare->get' );
-   is( $query->columns, 1, '$query->columns' );
-   is( scalar $query->column_name(0), "test.t.f", '$query->column_name(0)' );
-   is( $query->column_type(0)->name, "VARCHAR", '$query->column_type(0)->name' );
 
    # ->execute directly
-   $f = $cass->execute( "0123456789ABCDEF", [ "more-data" ], CONSISTENCY_ANY );
+   $f = $conn->execute( "0123456789ABCDEF", [ "more-data" ], CONSISTENCY_ANY );
 
    $stream = "";
    wait_for_stream { length $stream >= 8 + 35 } $S2 => $stream;
@@ -255,50 +235,6 @@ $loop->add( $cass );
                  "\x00\x01" . "\0\0\0\x09more-data" .
                  "\x00\x00",
               'stream after ->execute' );
-
-   # OPCODE_RESULT
-   $S2->syswrite( "\x81\x00\x01\x08\0\0\0\4\0\0\0\1" );
-
-   wait_for { $f->is_ready };
-
-   is_deeply( [ $f->get ], [],
-              '->execute returns nothing' );
-
-   # ->execute via $query from ARRAY
-   $f = $query->execute( [ "data-array" ], CONSISTENCY_ANY );
-
-   $stream = "";
-   wait_for_stream { length $stream >= 8 + 36 } $S2 => $stream;
-
-   # OPCODE_EXECUTE
-   is_hexstr( $stream,
-              "\x01\x00\x01\x0A\0\0\0\x24" .
-                 "\x00\x100123456789ABCDEF" .
-                 "\x00\x01" . "\0\0\0\x0adata-array" .
-                 "\x00\x00",
-              'stream after $query->execute(ARRAY)' );
-
-   # OPCODE_RESULT
-   $S2->syswrite( "\x81\x00\x01\x08\0\0\0\4\0\0\0\1" );
-
-   wait_for { $f->is_ready };
-
-   is_deeply( [ $f->get ], [],
-              '->execute returns nothing' );
-
-   # ->execute via $query from HASH
-   $f = $query->execute( { f => "data-hash" }, CONSISTENCY_ANY );
-
-   $stream = "";
-   wait_for_stream { length $stream >= 8 + 35 } $S2 => $stream;
-
-   # OPCODE_EXECUTE
-   is_hexstr( $stream,
-              "\x01\x00\x01\x0A\0\0\0\x23" .
-                 "\x00\x100123456789ABCDEF" .
-                 "\x00\x01" . "\0\0\0\x09data-hash" .
-                 "\x00\x00",
-              'stream after $query->execute(HASH)' );
 
    # OPCODE_RESULT
    $S2->syswrite( "\x81\x00\x01\x08\0\0\0\4\0\0\0\1" );

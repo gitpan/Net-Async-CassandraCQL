@@ -43,22 +43,6 @@ DESCRIPTION
     It is based on Protocol::CassandraCQL, which more completely documents
     the behaviours and limits of its ability to communicate with Cassandra.
 
-EVENTS
-  on_event $name, @args
-    A registered event occurred. `@args' will depend on the event name. Each
-    is also available as its own event, with the name in lowercase. If the
-    event is not one of the types recognised below, `@args' will contain the
-    actual Protocol::CassandraCQL::Frame object.
-
-  on_topology_change $type, $node
-    The cluster topology has changed. `$node' is a packed socket address.
-
-  on_status_change $status, $node
-    The node's status has changed. `$node' is a packed socket address.
-
-  on_schema_change $type, $keyspace, $table
-    A keyspace or table schema has changed.
-
 PARAMETERS
     The following named parameters may be passed to `new' or `configure':
 
@@ -92,48 +76,22 @@ METHODS
   $str = $cass->quote_identifier( $str )
     Quotes an identifier name suitable for inclusion in a CQL query string.
 
-  $f = $cass->connect( %args )
-    Connects to the Cassandra node an send the `OPCODE_STARTUP' message. The
+  $cass->connect( %args ) ==> ()
+    Connects to the Cassandra node and starts up the connection. The
     returned Future will yield nothing on success.
 
     Takes the following named arguments:
 
     host => STRING
     service => STRING
-    keyspace => STRING
-            Optional. Overrides the configured values.
 
     A host name is required, either as a named argument or as a configured
     value on the object. If the service name is missing, the default CQL
     port will be used instead.
 
-  $f = $cass->send_message( $opcode, $frame )
-    Sends a message with the given opcode and Protocol::CassandraCQL::Frame
-    for the message body. The returned Future will yield the response opcode
-    and frame.
-
-      ( $reply_opcode, $reply_frame ) = $f->get
-
-    This is a low-level method; applications should instead use one of the
-    wrapper methods below.
-
-  $f = $cass->startup
-    Sends the initial connection setup message. On success, the returned
-    Future yields nothing.
-
-    Normally this is not required as the `connect' method performs it
-    implicitly.
-
-  $f = $cass->options
-    Requests the list of supported options from the server node. On success,
-    the returned Future yields a HASH reference mapping option names to
-    ARRAY references containing valid values.
-
-  $f = $cass->query( $cql, $consistency )
+  $cass->query( $cql, $consistency ) ==> ( $type, $result )
     Performs a CQL query. On success, the values returned from the Future
     will depend on the type of query.
-
-     ( $type, $result ) = $f->get
 
     For `USE' queries, the type is `keyspace' and `$result' is a string
     giving the name of the new keyspace.
@@ -148,20 +106,16 @@ METHODS
     For other queries, such as `INSERT', `UPDATE' and `DELETE', the future
     returns nothing.
 
-  $f = $cass->query_rows( $cql, $consistency )
+  $cass->query_rows( $cql, $consistency ) ==> $result
     A shortcut wrapper for `query' which expects a `rows' result and returns
     it directly. Any other result is treated as an error. The returned
     Future returns a `Protocol::CassandraCQL::Result' directly
 
-     $result = $f->get
-
-  $f = $cass->prepare( $cql )
+  $cass->prepare( $cql ) ==> $query
     Prepares a CQL query for later execution. On success, the returned
     Future yields an instance of a prepared query object (see below).
 
-     ( $query ) = $f->get
-
-  $f = $cass->execute( $id, $data, $consistency )
+  $cass->execute( $id, $data, $consistency ) ==> ( $type, $result )
     Executes a previously-prepared statement, given its ID and the binding
     data. On success, the returned Future will yield results of the same
     form as the `query' method. `$data' should contain a list of encoded
@@ -171,24 +125,12 @@ METHODS
     `execute' method on the query object itself, as this will encode the
     parameters correctly.
 
-  $f = $cass->register( $events )
-    Registers the connection's interest in receiving events of the types
-    given in the ARRAY reference. Event names may be `TOPOLOGY_CHANGE',
-    `STATUS_CHANGE' or `SCHEMA_CHANGE'. On success, the returned Future
-    yields nothing.
-
 CONVENIENT WRAPPERS
     The following wrapper methods all wrap the basic `query' operation.
 
-  $f = $cass->use_keyspace( $keyspace )
-    A convenient shortcut to the `USE $keyspace' query which escapes the
-    keyspace name.
-
-  $f = $cass->schema_keyspaces
+  $cass->schema_keyspaces ==> $result
     A shortcut to a `SELECT' query on `system.schema_keyspaces', which
     returns a result object listing all the keyspaces.
-
-     ( $result ) = $f->get
 
     Exact details of the returned columns will depend on the Cassandra
     version, but the result should at least be keyed by the first column,
@@ -196,12 +138,10 @@ CONVENIENT WRAPPERS
 
      my $keyspaces = $result->rowmap_hash( "keyspace_name" )
 
-  $f = $cass->schema_columnfamilies( $keyspace )
+  $cass->schema_columnfamilies( $keyspace ) ==> $result
     A shortcut to a `SELECT' query on `system.schema_columnfamilies', which
     returns a result object listing all the columnfamilies of the given
     keyspace.
-
-     ( $result ) = $f->get
 
     Exact details of the returned columns will depend on the Cassandra
     version, but the result should at least be keyed by the first column,
@@ -209,11 +149,9 @@ CONVENIENT WRAPPERS
 
      my $columnfamilies = $result->rowmap_hash( "columnfamily_name" )
 
-  $f = $cass->schema_columns( $keyspace, $columnfamily )
+  $cass->schema_columns( $keyspace, $columnfamily ) ==> $result
     A shortcut to a `SELECT' query on `system.schema_columns', which returns
     a result object listing all the columns of the given columnfamily.
-
-     ( $result ) = $f->get
 
     Exact details of the returned columns will depend on the Cassandra
     version, but the result should at least be keyed by the first column,
@@ -222,10 +160,18 @@ CONVENIENT WRAPPERS
      my $columns = $result->rowmap_hash( "column_name" )
 
 TODO
-    *       Support frame compression
+    *       Allow storing multiple Cassandra seed node hostnames for
+            startup.
 
-    *       Allow storing multiple Cassandra node hostnames and perform some
-            kind of balancing or failover of connections.
+    *       Allow more than one primary node - roundrobin, or other load
+            balancing strategies.
+
+    *       Allow backup nodes, for faster connection failover.
+
+    *       Use `TOPOLGY_CHANGE' and `STATUS_CHANGE' events to keep the
+            nodelist updated.
+
+    *       Node preference by `data_center'.
 
 SPONSORS
     This code was paid for by

@@ -1,5 +1,12 @@
 Revision history for Net-Async-CassandraCQL
 
+0.06    2013/09/12 17:39:26
+        [CHANGES]
+         * First attempt at clustering support - NaCassandraCQL object now
+           represents the cluster as a whole, with individual connections
+         * Query the system.peers table at connect time, and fail-over to
+           another node if the connection fails
+
 0.05    2013/09/03 17:08:58
         [CHANGES]
          * Support password-based authentication

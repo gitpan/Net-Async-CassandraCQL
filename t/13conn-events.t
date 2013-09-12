@@ -13,7 +13,7 @@ use IO::Async::Stream;
 
 use Socket qw( pack_sockaddr_in inet_aton );
 
-use Net::Async::CassandraCQL;
+use Net::Async::CassandraCQL::Connection;
 use Protocol::CassandraCQL qw( CONSISTENCY_ANY CONSISTENCY_ONE CONSISTENCY_TWO );
 
 my $loop = IO::Async::Loop->new();
@@ -21,15 +21,15 @@ testing_loop( $loop );
 
 my ( $S1, $S2 ) = IO::Async::OS->socketpair() or die "Cannot create socket pair - $!";
 
-my $cass = Net::Async::CassandraCQL->new(
+my $conn = Net::Async::CassandraCQL::Connection->new(
    transport => IO::Async::Stream->new( handle => $S1 )
 );
 
-$loop->add( $cass );
+$loop->add( $conn );
 
 # ->register
 {
-   my $f = $cass->register( [qw( STATUS_CHANGE )] );
+   my $f = $conn->register( [qw( STATUS_CHANGE )] );
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 0 } $S2 => $stream;
@@ -52,7 +52,7 @@ $loop->add( $cass );
 # EVENT handling
 {
    my ( $status, $node );
-   $cass->configure(
+   $conn->configure(
       on_status_change => sub { ( undef, $status, $node ) = @_; },
    );
 

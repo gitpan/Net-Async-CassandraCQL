@@ -11,7 +11,7 @@ use IO::Async::OS;
 use IO::Async::Loop;
 use IO::Async::Stream;
 
-use Net::Async::CassandraCQL;
+use Net::Async::CassandraCQL::Connection;
 use Protocol::CassandraCQL::Frame;
 
 my $loop = IO::Async::Loop->new();
@@ -19,17 +19,17 @@ testing_loop( $loop );
 
 my ( $S1, $S2 ) = IO::Async::OS->socketpair() or die "Cannot create socket pair - $!";
 
-my $cass = Net::Async::CassandraCQL->new(
+my $conn = Net::Async::CassandraCQL::Connection->new(
    transport => IO::Async::Stream->new( handle => $S1 )
 );
 
-ok( defined $cass, 'defined $cass' );
+ok( defined $conn, 'defined $conn' );
 
-$loop->add( $cass );
+$loop->add( $conn );
 
 # Simulate the smallest possible STARTUP/READY exchange
 {
-   my $f = $cass->send_message( 1,
+   my $f = $conn->send_message( 1,
       Protocol::CassandraCQL::Frame->new->pack_string_list( [] ) );
 
    isa_ok( $f, "Future", '$f isa Future for ->send_message' );
@@ -54,9 +54,9 @@ $loop->add( $cass );
 
 # Two in flight
 {
-   my $f1 = $cass->send_message( 3,
+   my $f1 = $conn->send_message( 3,
       Protocol::CassandraCQL::Frame->new->pack_string( "ONE" ) );
-   my $f2 = $cass->send_message( 4,
+   my $f2 = $conn->send_message( 4,
       Protocol::CassandraCQL::Frame->new->pack_string( "TWO" ) );
 
    my $stream = "";
@@ -83,7 +83,7 @@ $loop->add( $cass );
 
 # Error
 {
-   my $f = $cass->send_message( 5, Protocol::CassandraCQL::Frame->new );
+   my $f = $conn->send_message( 5, Protocol::CassandraCQL::Frame->new );
 
    my $stream = "";
    wait_for_stream{ length $stream >= 8 } $S2 => $stream;

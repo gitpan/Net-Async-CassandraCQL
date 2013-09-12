@@ -11,18 +11,17 @@ use IO::Async::Loop;
 use IO::Async::Stream;
 
 use Protocol::CassandraCQL qw( OPCODE_QUERY OPCODE_RESULT RESULT_VOID CONSISTENCY_ANY );
-use Net::Async::CassandraCQL;
+use Net::Async::CassandraCQL::Connection;
 
 my $loop = IO::Async::Loop->new();
 testing_loop( $loop );
 
 my ( $S1, $S2 ) = IO::Async::OS->socketpair() or die "Cannot create socket pair - $!";
 
-my $cass = Net::Async::CassandraCQL->new(
+my $conn = Net::Async::CassandraCQL::Connection->new(
    transport => IO::Async::Stream->new( handle => $S1 ),
-   default_consistency => CONSISTENCY_ANY,
 );
-$loop->add( $cass );
+$loop->add( $conn );
 
 # A tiny simulated server that responds with a VOID result to every QUERY
 $loop->add( IO::Async::Stream->new(
@@ -49,7 +48,7 @@ $loop->add( IO::Async::Stream->new(
 ) );
 
 # Fire off 127 queries, queue the remainder
-my @f = map { $cass->query( "INSERT INTO t (v) = $_" ) } 1 .. 1000;
+my @f = map { $conn->query( "INSERT INTO t (v) = $_", CONSISTENCY_ANY ) } 1 .. 1000;
 
 # Wait on success from all
 Future->needs_all( @f )->get;

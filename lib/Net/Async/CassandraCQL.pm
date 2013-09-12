@@ -9,22 +9,25 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
-use base qw( IO::Async::Protocol::Stream );
+use base qw( IO::Async::Notifier );
 
 use Carp;
 
-use Future 0.13;
+use Future::Utils qw( fmap_void );
+use List::Util qw( shuffle );
+use Scalar::Util qw( weaken );
+use Socket qw( inet_ntop AF_INET AF_INET6 );
 
-use Protocol::CassandraCQL qw( :opcodes :results :consistencies );
-use Protocol::CassandraCQL::Frame;
-use Protocol::CassandraCQL::ColumnMeta;
-use Protocol::CassandraCQL::Result;
+use Protocol::CassandraCQL qw( CONSISTENCY_ONE );
 
-use Net::Async::CassandraCQL::Query;
+use Net::Async::CassandraCQL::Connection;
 
 use constant DEFAULT_CQL_PORT => 9042;
+
+# Time after which down nodes will be retried
+use constant NODE_RETRY_TIME => 60;
 
 =head1 NAME
 
@@ -78,29 +81,6 @@ behaviours and limits of its ability to communicate with Cassandra.
 
 =cut
 
-=head1 EVENTS
-
-=head2 on_event $name, @args
-
-A registered event occurred. C<@args> will depend on the event name. Each
-is also available as its own event, with the name in lowercase. If the event
-is not one of the types recognised below, C<@args> will contain the actual
-L<Protocol::CassandraCQL::Frame> object.
-
-=head2 on_topology_change $type, $node
-
-The cluster topology has changed. C<$node> is a packed socket address.
-
-=head2 on_status_change $status, $node
-
-The node's status has changed. C<$node> is a packed socket address.
-
-=head2 on_schema_change $type, $keyspace, $table
-
-A keyspace or table schema has changed.
-
-=cut
-
 =head1 PARAMETERS
 
 The following named parameters may be passed to C<new> or C<configure>:
@@ -135,22 +115,12 @@ C<execute>.
 
 =cut
 
-sub _init
-{
-   my $self = shift;
-   $self->SUPER::_init( @_ );
-
-   $self->{streams} = []; # map [1 .. 127] to Future
-   $self->{pending} = []; # queue of [$opcode, $frame, $f]
-}
-
 sub configure
 {
    my $self = shift;
    my %params = @_;
 
-   foreach (qw( host service username password keyspace default_consistency 
-                on_event on_topology_change on_status_change on_schema_change )) {
+   foreach (qw( host service username password keyspace default_consistency )) {
       $self->{$_} = delete $params{$_} if exists $params{$_};
    }
 
@@ -201,34 +171,10 @@ sub quote_identifier
    return qq("$str");
 }
 
-# function
-sub _decode_result
-{
-   my ( $response ) = @_;
+=head2 $cass->connect( %args ) ==> ()
 
-   my $result = $response->unpack_int;
-
-   if( $result == RESULT_VOID ) {
-      return Future->new->done();
-   }
-   elsif( $result == RESULT_ROWS ) {
-      return Future->new->done( rows => Protocol::CassandraCQL::Result->from_frame( $response ) );
-   }
-   elsif( $result == RESULT_SET_KEYSPACE ) {
-      return Future->new->done( keyspace => $response->unpack_string );
-   }
-   elsif( $result == RESULT_SCHEMA_CHANGE ) {
-      return Future->new->done( schema_change => [ map { $response->unpack_string } 1 .. 3 ] );
-   }
-   else {
-      return Future->new->done( "??" => $response->bytes );
-   }
-}
-
-=head2 $f = $cass->connect( %args )
-
-Connects to the Cassandra node an send the C<OPCODE_STARTUP> message. The
-returned Future will yield nothing on success.
+Connects to the Cassandra node and starts up the connection. The returned
+Future will yield nothing on success.
 
 Takes the following named arguments:
 
@@ -238,10 +184,6 @@ Takes the following named arguments:
 
 =item service => STRING
 
-=item keyspace => STRING
-
-Optional. Overrides the configured values.
-
 =back
 
 A host name is required, either as a named argument or as a configured value
@@ -250,280 +192,178 @@ used instead.
 
 =cut
 
+# ->_connect_node( $host, $service ) ==> $conn
+# mocked during unit testing
+sub _connect_node
+{
+   my $self = shift;
+   my ( $host, $service ) = @_;
+
+   $service //= $self->{service} // DEFAULT_CQL_PORT;
+
+   my $conn = Net::Async::CassandraCQL::Connection->new(
+      on_closed => sub {
+         my $node = shift;
+         $self->remove_child( $node );
+         $self->_closed_node( $node->nodeid );
+      },
+      map { $_ => $self->{$_} } qw( username password ),
+   );
+   $self->add_child( $conn );
+
+   $conn->connect(
+      host    => $host,
+      service => $service,
+   )->on_fail( sub {
+      # Some kinds of failure have already removed it
+      $self->remove_child( $conn ) if $conn->parent;
+   });
+}
+
+# invoked during unit testing
+sub _closed_node
+{
+   my $self = shift;
+   my ( $nodeid ) = @_;
+
+   my $now = time();
+
+   my $node = $self->{nodes}{$nodeid} or return;
+
+   undef $node->{conn};
+   undef $node->{ready_f};
+   $node->{down_time} = $now;
+
+   if( $nodeid eq $self->{primary} ) {
+      $self->debug_printf( "PRIMARY DOWN %s", $nodeid );
+      undef $self->{primary};
+
+      $self->_pick_new_primary( $now );
+   }
+}
+
 sub connect
 {
    my $self = shift;
    my %args = @_;
 
-   $args{host}    //= $self->{host}    or croak "Require 'host'";
-   $args{service} //= $self->{service} // DEFAULT_CQL_PORT;
+   my $conn;
 
-   my $keyspace = $args{keyspace} // $self->{keyspace};
-
-   return ( $self->{connect_f} ||=
-      $self->SUPER::connect( %args )->on_fail( sub { undef $self->{connect_f} } ) )
-      ->and_then( sub {
-         $self->startup
-      })->and_then( sub {
-         my $f = shift;
-         return $f unless defined $keyspace;
-
-         $self->use_keyspace( $keyspace );
-      });
-}
-
-sub on_read
-{
-   my $self = shift;
-   my ( $buffref, $eof ) = @_;
-
-   my ( $version, $flags, $streamid, $opcode, $frame ) =
-      Protocol::CassandraCQL::Frame->parse( $$buffref ) or return 0;
-
-   # v1 response
-   $version == 0x81 or
-      $self->fail_all_and_close( sprintf "Unexpected message version %#02x\n", $version ), return;
-
-   # TODO: flags
-   if( my $f = $self->{streams}[$streamid] ) {
-      undef $self->{streams}[$streamid];
-
-      if( $opcode == OPCODE_ERROR ) {
-         my $err     = $frame->unpack_int;
-         my $message = $frame->unpack_string;
-         $f->fail( "OPCODE_ERROR: $message\n", $err, $frame );
-      }
-      else {
-         $f->done( $opcode, $frame );
-      }
-
-      if( my $next = shift @{ $self->{pending} } ) {
-         my ( $opcode, $frame, $f ) = @$next;
-         $self->_send( $opcode, $streamid, $frame, $f );
-      }
-   }
-   elsif( $streamid == 0 and $opcode == OPCODE_ERROR ) {
-      my $err     = $frame->unpack_int;
-      my $message = $frame->unpack_string;
-      $self->fail_all_and_close( "OPCODE_ERROR: $message\n", $err, $frame );
-   }
-   elsif( $streamid == 0xff and $opcode == OPCODE_EVENT ) {
-      $self->_event( $frame );
-   }
-   else {
-      print STDERR "Received a message opcode=$opcode for unknown stream $streamid\n";
-   }
-
-   return 1;
-}
-
-sub _event
-{
-   my $self = shift;
-   my ( $frame ) = @_;
-
-   my $name = $frame->unpack_string;
-
-   my @args;
-   if( $name eq "TOPOLOGY_CHANGE" ) {
-      push @args, $frame->unpack_string; # type
-      push @args, $frame->unpack_inet;   # node
-   }
-   elsif( $name eq "STATUS_CHANGE" ) {
-      push @args, $frame->unpack_string; # status
-      push @args, $frame->unpack_inet;   # node
-   }
-   elsif( $name eq "SCHEMA_CHANGE" ) {
-      push @args, $frame->unpack_string; # type
-      push @args, $frame->unpack_string; # keyspace
-      push @args, $frame->unpack_string; # table
-   }
-   else {
-       push @args, $frame;
-   }
-
-   $self->maybe_invoke_event( "on_".lc($name), @args )
-      or $self->maybe_invoke_event( on_event => $name, @args );
-}
-
-sub on_closed
-{
-   my $self = shift;
-   $self->fail_all( "Connection closed" );
-}
-
-sub fail_all
-{
-   my $self = shift;
-   my ( $failure ) = @_;
-
-   foreach ( @{ $self->{streams} } ) {
-      $_->fail( $failure ) if $_;
-   }
-   @{ $self->{streams} } = ();
-
-   foreach ( @{ $self->{pending} } ) {
-      $_->[2]->fail( $failure );
-   }
-   @{ $self->{pending} } = ();
-}
-
-sub fail_all_and_close
-{
-   my $self = shift;
-   my ( $failure ) = @_;
-
-   $self->fail_all( $failure );
-
-   $self->close;
-
-   return Future->new->fail( $failure );
-}
-
-=head2 $f = $cass->send_message( $opcode, $frame )
-
-Sends a message with the given opcode and L<Protocol::CassandraCQL::Frame> for
-the message body. The returned Future will yield the response opcode and
-frame.
-
-  ( $reply_opcode, $reply_frame ) = $f->get
-
-This is a low-level method; applications should instead use one of the wrapper
-methods below.
-
-=cut
-
-sub send_message
-{
-   my $self = shift;
-   my ( $opcode, $frame ) = @_;
-
-   my $f = $self->loop->new_future;
-
-   my $streams = $self->{streams} ||= [];
-   my $id;
-   foreach ( 1 .. $#$streams ) {
-      $id = $_ and last if !defined $streams->[$_];
-   }
-
-   if( !defined $id ) {
-      if( $#$streams == 127 ) {
-         push @{ $self->{pending} }, [ $opcode, $frame, $f ];
-         return $f;
-      }
-      $id = @$streams;
-      $id = 1 if !$id; # can't use 0
-   }
-
-   $self->_send( $opcode, $id, $frame, $f );
-
-   return $f;
-}
-
-sub _send
-{
-   my $self = shift;
-   my ( $opcode, $id, $frame, $f ) = @_;
-
-   $self->write( $frame->build( 0x01, 0, $id, $opcode ) );
-
-   $self->{streams}[$id] = $f;
-}
-
-=head2 $f = $cass->startup
-
-Sends the initial connection setup message. On success, the returned Future
-yields nothing.
-
-Normally this is not required as the C<connect> method performs it implicitly.
-
-=cut
-
-sub startup
-{
-   my $self = shift;
-
-   $self->send_message( OPCODE_STARTUP,
-      Protocol::CassandraCQL::Frame->new->pack_string_map( {
-            CQL_VERSION => "3.0.5",
-      } )
+   $self->_connect_node(
+      $args{host}    // $self->{host},
+      $args{service},
    )->then( sub {
-      my ( $op, $response ) = @_;
+      ( $conn ) = @_;
+      $self->_list_nodes( $conn );
+   })->then( sub {
+      my @nodes = @_;
 
-      if( $op == OPCODE_READY ) {
-         return Future->new->done;
+      $self->{nodes} = \my %nodes;
+      foreach my $node ( @nodes ) {
+         my $n = $nodes{$node->{host}} = {
+            data_center => $node->{data_center},
+            rack        => $node->{rack},
+         };
+
+         $n->{conn} = $conn if $node->{host} eq $conn->nodeid;
       }
-      elsif( $op == OPCODE_AUTHENTICATE ) {
-         return $self->_authenticate( $response->unpack_string );
-      }
-      else {
-         return $self->fail_all_and_close( "Expected OPCODE_READY or OPCODE_AUTHENTICATE" );
-      }
+
+      # Initial primary on the seed
+      $self->{primary} = ( grep { $nodes{$_}{conn} } keys %nodes )[0];
+      my $node = $nodes{$self->{primary}};
+
+      $self->debug_printf( "PRIMARY PICKED %s", $self->{primary} );
+      $node->{ready_f} = $self->_ready_node( $self->{primary} );
    });
 }
 
-sub _authenticate
+sub _pick_new_primary
 {
    my $self = shift;
-   my ( $authenticator ) = @_;
+   my ( $now ) = @_;
 
-   if( $authenticator eq "org.apache.cassandra.auth.PasswordAuthenticator" ) {
-      foreach (qw( username password )) {
-         defined $self->{$_} or croak "Cannot authenticate by password without $_";
-      }
+   my $nodes = $self->{nodes};
 
-      $self->send_message( OPCODE_CREDENTIALS,
-         Protocol::CassandraCQL::Frame->new->pack_string_map( {
-            username => $self->{username},
-            password => $self->{password},
-         }
-      )
-      )->then( sub {
-         my ( $op, $response ) = @_;
-         $op == OPCODE_READY or return $self->fail_all_and_close( "Expected OPCODE_READY" );
+   my $new_primary;
 
-         return Future->new->done;
-      });
+   # Expire old down statuses and try to find a non-down node
+   foreach my $nodeid ( shuffle keys %$nodes ) {
+      my $node = $nodes->{$nodeid};
+
+      delete $node->{down_time} if defined $node->{down_time} and $now - $node->{down_time} > NODE_RETRY_TIME;
+      $new_primary ||= $nodeid if !$node->{down_time};
    }
-   else {
-      return $self->fail_all_and_close( "Unrecognised authenticator $authenticator" );
+
+   if( !defined $new_primary ) {
+      die "ARGH! TODO: can't find a new node to be primary\n";
    }
-}
 
-=head2 $f = $cass->options
+   $self->debug_printf( "PRIMARY PICKED %s", $new_primary );
+   $self->{primary} = $new_primary;
 
-Requests the list of supported options from the server node. On success, the
-returned Future yields a HASH reference mapping option names to ARRAY
-references containing valid values.
+   my $node = $nodes->{$new_primary};
 
-=cut
+   my $f = $node->{ready_f} = $self->_connect_node( $new_primary )->then( sub {
+      my ( $conn ) = @_;
+      $node->{conn} = $conn;
 
-sub options
-{
-   my $self = shift;
-
-   $self->send_message( OPCODE_OPTIONS,
-      Protocol::CassandraCQL::Frame->new
-   )->then( sub {
-      my ( $op, $response ) = @_;
-      $op == OPCODE_SUPPORTED or return Future->new->fail( "Expected OPCODE_SUPPORTED" );
-
-      my %opts;
-      # $response contains a multimap; short * { string, string list }
-      foreach ( 1 .. $response->unpack_short ) {
-         my $name = $response->unpack_string;
-         $opts{$name} = $response->unpack_string_list;
-      }
-      return Future->new->done( \%opts );
+      $self->_ready_node( $new_primary )
+   })->on_fail( sub {
+      print STDERR "ARGH! NEW PRIMARY FAILED: @_\n";
+   })->on_done( sub {
+      $self->debug_printf( "PRIMARY UP %s", $new_primary );
    });
 }
 
-=head2 $f = $cass->query( $cql, $consistency )
+sub _ready_node
+{
+   my $self = shift;
+   my ( $nodeid ) = @_;
+
+   my $node = $self->{nodes}{$nodeid} or die "Don't have a node id $nodeid";
+   my $conn = $node->{conn} or die "Expected node to have a {conn} but it doesn't";
+
+   my $keyspace = $self->{keyspace};
+
+   my $keyspace_f =
+      $keyspace ? $conn->query( "USE " . $self->quote_identifier( $keyspace ), CONSISTENCY_ONE )
+                : Future->new->done;
+
+   $keyspace_f->then( sub {
+      my $conn_f = Future->new->done( $conn );
+      return $conn_f unless my $queries = $self->{queries};
+
+      # Expire old ones
+      defined $queries->{$_} or delete $queries->{$_} for keys %$queries;
+      return $conn_f unless keys %$queries;
+
+      ( fmap_void {
+         my $query = shift;
+         $conn->prepare( $query->cql, $self );
+      } foreach => [ values %$queries ] )
+         ->then( sub { $conn_f } );
+   });
+}
+
+sub _get_a_node
+{
+   my $self = shift;
+
+   defined $self->{primary} or die "ARGH: $self -> _get_a_node called with no defined PRIMARY";
+
+   my $nodes = $self->{nodes};
+
+   if( my $node = $nodes->{$self->{primary}} ) {
+      return $node->{ready_f};
+   }
+
+   die "ARGH: don't have a primary node";
+}
+
+=head2 $cass->query( $cql, $consistency ) ==> ( $type, $result )
 
 Performs a CQL query. On success, the values returned from the Future will
 depend on the type of query.
-
- ( $type, $result ) = $f->get
 
 For C<USE> queries, the type is C<keyspace> and C<$result> is a string giving
 the name of the new keyspace.
@@ -548,23 +388,16 @@ sub query
    $consistency //= $self->{default_consistency};
    defined $consistency or croak "'query' needs a consistency level";
 
-   $self->send_message( OPCODE_QUERY,
-      Protocol::CassandraCQL::Frame->new->pack_lstring( $cql )
-                                        ->pack_short( $consistency )
-   )->then( sub {
-      my ( $op, $response ) = @_;
-      $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
-      return _decode_result( $response );
+   $self->_get_a_node->then( sub {
+      shift->query( $cql, $consistency );
    });
 }
 
-=head2 $f = $cass->query_rows( $cql, $consistency )
+=head2 $cass->query_rows( $cql, $consistency ) ==> $result
 
 A shortcut wrapper for C<query> which expects a C<rows> result and returns it
 directly. Any other result is treated as an error. The returned Future returns
 a C<Protocol::CassandraCQL::Result> directly
-
- $result = $f->get
 
 =cut
 
@@ -580,12 +413,10 @@ sub query_rows
    });
 }
 
-=head2 $f = $cass->prepare( $cql )
+=head2 $cass->prepare( $cql ) ==> $query
 
 Prepares a CQL query for later execution. On success, the returned Future
 yields an instance of a prepared query object (see below).
-
- ( $query ) = $f->get
 
 =cut
 
@@ -594,19 +425,20 @@ sub prepare
    my $self = shift;
    my ( $cql ) = @_;
 
-   $self->send_message( OPCODE_PREPARE,
-      Protocol::CassandraCQL::Frame->new->pack_lstring( $cql )
-   )->then( sub {
-      my ( $op, $response ) = @_;
-      $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
+   my $queries = $self->{queries} ||= {};
 
-      $response->unpack_int == RESULT_PREPARED or return Future->new->fail( "Expected RESULT_PREPARED" );
+   $self->_get_a_node->then( sub {
+      shift->prepare( $cql, $self )
+   })->on_done( sub {
+      my ( $query ) = @_;
 
-      return Future->new->done( Net::Async::CassandraCQL::Query->from_frame( $self, $response ) );
+      # Expire old ones
+      defined $queries->{$_} or delete $queries->{$_} for keys %$queries;
+      weaken( $queries->{$query->id} = $query );
    });
 }
 
-=head2 $f = $cass->execute( $id, $data, $consistency )
+=head2 $cass->execute( $id, $data, $consistency ) ==> ( $type, $result )
 
 Executes a previously-prepared statement, given its ID and the binding data.
 On success, the returned Future will yield results of the same form as the
@@ -626,39 +458,8 @@ sub execute
    $consistency //= $self->{default_consistency};
    defined $consistency or croak "'execute' needs a consistency level";
 
-   my $frame = Protocol::CassandraCQL::Frame->new
-      ->pack_short_bytes( $id )
-      ->pack_short( scalar @$data );
-   $frame->pack_bytes( $_ ) for @$data;
-   $frame->pack_short( $consistency );
-
-   $self->send_message( OPCODE_EXECUTE, $frame )->then( sub {
-      my ( $op, $response ) = @_;
-      $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
-      return _decode_result( $response );
-   });
-}
-
-=head2 $f = $cass->register( $events )
-
-Registers the connection's interest in receiving events of the types given in
-the ARRAY reference. Event names may be C<TOPOLOGY_CHANGE>, C<STATUS_CHANGE>
-or C<SCHEMA_CHANGE>. On success, the returned Future yields nothing.
-
-=cut
-
-sub register
-{
-   my $self = shift;
-   my ( $events ) = @_;
-
-   $self->send_message( OPCODE_REGISTER,
-      Protocol::CassandraCQL::Frame->new->pack_string_list( $events )
-   )->then( sub {
-      my ( $op, $response ) = @_;
-      $op == OPCODE_READY or Future->new->fail( "Expected OPCODE_READY" );
-
-      return Future->new->done;
+   $self->_get_a_node->then( sub {
+      shift->execute( $id, $data, $consistency );
    });
 }
 
@@ -668,27 +469,10 @@ The following wrapper methods all wrap the basic C<query> operation.
 
 =cut
 
-=head2 $f = $cass->use_keyspace( $keyspace )
-
-A convenient shortcut to the C<USE $keyspace> query which escapes the keyspace
-name.
-
-=cut
-
-sub use_keyspace
-{
-   my $self = shift;
-   my ( $keyspace ) = @_;
-
-   $self->query( "USE " . $self->quote_identifier( $keyspace ), CONSISTENCY_ANY );
-}
-
-=head2 $f = $cass->schema_keyspaces
+=head2 $cass->schema_keyspaces ==> $result
 
 A shortcut to a C<SELECT> query on C<system.schema_keyspaces>, which returns a
 result object listing all the keyspaces.
-
- ( $result ) = $f->get
 
 Exact details of the returned columns will depend on the Cassandra version,
 but the result should at least be keyed by the first column, called
@@ -708,12 +492,10 @@ sub schema_keyspaces
    );
 }
 
-=head2 $f = $cass->schema_columnfamilies( $keyspace )
+=head2 $cass->schema_columnfamilies( $keyspace ) ==> $result
 
 A shortcut to a C<SELECT> query on C<system.schema_columnfamilies>, which
 returns a result object listing all the columnfamilies of the given keyspace.
-
- ( $result ) = $f->get
 
 Exact details of the returned columns will depend on the Cassandra version,
 but the result should at least be keyed by the first column, called
@@ -734,12 +516,10 @@ sub schema_columnfamilies
    );
 }
 
-=head2 $f = $cass->schema_columns( $keyspace, $columnfamily )
+=head2 $cass->schema_columns( $keyspace, $columnfamily ) ==> $result
 
 A shortcut to a C<SELECT> query on C<system.schema_columns>, which returns a
 result object listing all the columns of the given columnfamily.
-
- ( $result ) = $f->get
 
 Exact details of the returned columns will depend on the Cassandra version,
 but the result should at least be keyed by the first column, called
@@ -760,18 +540,65 @@ sub schema_columns
    );
 }
 
+sub _list_nodes
+{
+   my $self = shift;
+   my ( $conn ) = @_;
+
+   # The system.peers table doesn't include the node we actually connect to.
+   # So we'll have to look up its own information from system.local and add
+   # the socket address manually.
+   Future->needs_all(
+      $conn->query( "SELECT data_center, rack FROM system.local", CONSISTENCY_ONE )
+         ->then( sub {
+            my ( $type, $result ) = @_;
+            $type eq "rows" or Future->new->fail( "Expected 'rows' result" );
+            my $local = $result->row_hash( 0 );
+            $local->{host} = $conn->nodeid;
+            Future->new->done( $local );
+         }),
+      $conn->query( "SELECT peer, data_center, rack FROM system.peers", CONSISTENCY_ONE )
+         ->then( sub {
+            my ( $type, $result ) = @_;
+            $type eq "rows" or Future->new->fail( "Expected 'rows' result" );
+            my @nodes = $result->rows_hash;
+            foreach my $node ( @nodes ) {
+               my $addrlen = length $node->{peer};
+               my $family = $addrlen ==  4 ? AF_INET :
+                            $addrlen == 16 ? AF_INET6 :
+                            die "Expected ADDRLEN 4 or 16";
+               $node->{host} = inet_ntop( $family, delete $node->{peer} );
+            }
+            Future->new->done( @nodes );
+         }),
+   )
+}
+
 =head1 TODO
 
 =over 8
 
 =item *
 
-Support frame compression
+Allow storing multiple Cassandra seed node hostnames for startup.
 
 =item *
 
-Allow storing multiple Cassandra node hostnames and perform some kind of
-balancing or failover of connections.
+Allow more than one primary node - roundrobin, or other load balancing
+strategies.
+
+=item *
+
+Allow backup nodes, for faster connection failover.
+
+=item *
+
+Use C<TOPOLGY_CHANGE> and C<STATUS_CHANGE> events to keep the nodelist
+updated.
+
+=item *
+
+Node preference by C<data_center>.
 
 =back
 
