@@ -19,20 +19,20 @@ name: Net-Async-CassandraCQL
 provides:
   Net::Async::CassandraCQL:
     file: lib/Net/Async/CassandraCQL.pm
-    version: 0.06
+    version: 0.07
   Net::Async::CassandraCQL::Connection:
     file: lib/Net/Async/CassandraCQL/Connection.pm
-    version: 0.06
+    version: 0.07
   Net::Async::CassandraCQL::Query:
     file: lib/Net/Async/CassandraCQL/Query.pm
-    version: 0.06
+    version: 0.07
 requires:
   Compress::Snappy: 0
   Future: 0.17
   IO::Async::Loop: 0.54
-  IO::Async::Protocol::Stream: 0
+  IO::Async::Stream: 0.59
   IO::Socket::IP: 0
   Protocol::CassandraCQL: 0.07
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.06
+version: 0.07

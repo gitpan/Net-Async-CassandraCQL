@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 use base qw( IO::Async::Notifier );
 
@@ -18,7 +18,7 @@ use Carp;
 use Future::Utils qw( fmap_void );
 use List::Util qw( shuffle );
 use Scalar::Util qw( weaken );
-use Socket qw( inet_ntop AF_INET AF_INET6 );
+use Socket qw( inet_ntop getnameinfo AF_INET AF_INET6 NI_NUMERICHOST NIx_NOSERV );
 
 use Protocol::CassandraCQL qw( CONSISTENCY_ONE );
 
@@ -111,17 +111,49 @@ connect method.
 Optional. Default consistency level to use if none is provided to C<query> or
 C<execute>.
 
+=item primaries => INT
+
+Optional. The number of primary node connections to maintain. Defaults to 1 if
+not specified.
+
+=item prefer_dc => STRING
+
+Optional. If set, prefer to pick primary nodes from the given data center,
+only falling back on others if there are not enough available.
+
 =back
 
 =cut
+
+sub _init
+{
+   my $self = shift;
+   my ( $params ) = @_;
+
+   $params->{primaries} //= 1;
+
+   # precache these weasels only once
+   $self->{on_status_change_cb} = $self->_replace_weakself( sub {
+      shift->_on_status_change( @_ );
+   });
+
+   $self->SUPER::_init( $params );
+}
 
 sub configure
 {
    my $self = shift;
    my %params = @_;
 
-   foreach (qw( host service username password keyspace default_consistency )) {
+   foreach (qw( host service username password keyspace default_consistency
+                prefer_dc )) {
       $self->{$_} = delete $params{$_} if exists $params{$_};
+   }
+
+   if( exists $params{primaries} ) {
+      $self->{primaries} = delete $params{primaries};
+
+      # TODO: connect more / drain old ones
    }
 
    $self->SUPER::configure( %params );
@@ -130,6 +162,26 @@ sub configure
 =head1 METHODS
 
 =cut
+
+# function
+sub _inet_to_string
+{
+   my ( $addr ) = @_;
+
+   my $addrlen = length $addr;
+   my $family = $addrlen ==  4 ? AF_INET :
+                $addrlen == 16 ? AF_INET6 :
+                die "Expected ADDRLEN 4 or 16";
+   return inet_ntop( $family, $addr );
+}
+
+# function
+sub _nodeid_to_string
+{
+   my ( $node ) = @_;
+
+   return ( getnameinfo( $node, NI_NUMERICHOST, NIx_NOSERV ) )[1];
+}
 
 =head2 $str = $cass->quote( $str )
 
@@ -234,12 +286,34 @@ sub _closed_node
    undef $node->{ready_f};
    $node->{down_time} = $now;
 
-   if( $nodeid eq $self->{primary} ) {
+   if( exists $self->{primary_ids}{$nodeid} ) {
       $self->debug_printf( "PRIMARY DOWN %s", $nodeid );
-      undef $self->{primary};
+      delete $self->{primary_ids}{$nodeid};
 
       $self->_pick_new_primary( $now );
    }
+
+   if( exists $self->{event_ids}{$nodeid} ) {
+      delete $self->{event_ids}{$nodeid};
+
+      $self->_pick_new_eventwatch;
+   }
+}
+
+sub _list_nodeids
+{
+   my $self = shift;
+
+   my $nodes = $self->{nodes};
+
+   my @nodeids = shuffle keys %$nodes;
+   if( defined( my $dc = $self->{prefer_dc} ) ) {
+      # Put preferred ones first
+      @nodeids = ( ( grep { $nodes->{$_}{data_center} eq $dc } @nodeids ),
+                   ( grep { $nodes->{$_}{data_center} ne $dc } @nodeids ) );
+   }
+
+   return @nodeids;
 }
 
 sub connect
@@ -265,15 +339,38 @@ sub connect
             rack        => $node->{rack},
          };
 
-         $n->{conn} = $conn if $node->{host} eq $conn->nodeid;
+         if( $node->{host} eq $conn->nodeid ) {
+            $n->{conn} = $conn;
+         }
       }
 
       # Initial primary on the seed
-      $self->{primary} = ( grep { $nodes{$_}{conn} } keys %nodes )[0];
-      my $node = $nodes{$self->{primary}};
+      $self->{primary_ids} = {
+         $conn->nodeid => 1,
+      };
+      my $primary0 = $nodes{$conn->nodeid};
+      my $have_primaries = 1;
 
-      $self->debug_printf( "PRIMARY PICKED %s", $self->{primary} );
-      $node->{ready_f} = $self->_ready_node( $self->{primary} );
+      my @conn_f;
+
+      $self->debug_printf( "PRIMARY PICKED %s", $conn->nodeid );
+      push @conn_f, $primary0->{ready_f} = $self->_ready_node( $conn->nodeid );
+
+      my @nodeids = $self->_list_nodeids;
+
+      while( @nodeids and $have_primaries < $self->{primaries} ) {
+         my $primary = shift @nodeids;
+         next if $primary eq $conn->nodeid;
+
+         push @conn_f, $self->_connect_new_primary( $primary );
+         $have_primaries++;
+      }
+
+      $self->_pick_new_eventwatch;
+      $self->_pick_new_eventwatch if $have_primaries > 1;
+
+      return $conn_f[0] if @conn_f == 1;
+      return Future->needs_all( @conn_f );
    });
 }
 
@@ -286,11 +383,15 @@ sub _pick_new_primary
 
    my $new_primary;
 
-   # Expire old down statuses and try to find a non-down node
-   foreach my $nodeid ( shuffle keys %$nodes ) {
+   # Expire old down statuses and try to find a non-down node that is not yet
+   # primary
+   foreach my $nodeid ( $self->_list_nodeids ) {
       my $node = $nodes->{$nodeid};
 
       delete $node->{down_time} if defined $node->{down_time} and $now - $node->{down_time} > NODE_RETRY_TIME;
+
+      next if $self->{primary_ids}{$nodeid};
+
       $new_primary ||= $nodeid if !$node->{down_time};
    }
 
@@ -298,10 +399,18 @@ sub _pick_new_primary
       die "ARGH! TODO: can't find a new node to be primary\n";
    }
 
-   $self->debug_printf( "PRIMARY PICKED %s", $new_primary );
-   $self->{primary} = $new_primary;
+   $self->_connect_new_primary( $new_primary );
+}
 
-   my $node = $nodes->{$new_primary};
+sub _connect_new_primary
+{
+   my $self = shift;
+   my ( $new_primary ) = @_;
+
+   $self->debug_printf( "PRIMARY PICKED %s", $new_primary );
+   $self->{primary_ids}{$new_primary} = 1;
+
+   my $node = $self->{nodes}{$new_primary};
 
    my $f = $node->{ready_f} = $self->_connect_node( $new_primary )->then( sub {
       my ( $conn ) = @_;
@@ -345,15 +454,82 @@ sub _ready_node
    });
 }
 
+sub _pick_new_eventwatch
+{
+   my $self = shift;
+
+   my @primaries = keys %{ $self->{primary_ids} };
+
+   {
+      my $nodeid = $primaries[rand @primaries];
+      redo if $self->{event_ids}{$nodeid};
+
+      $self->{event_ids}{$nodeid} = 1;
+
+      my $node = $self->{nodes}{$nodeid};
+      $node->{ready_f}->on_done( sub {
+         my $conn = shift;
+         $conn->configure(
+            on_status_change => $self->{on_status_change_cb},
+         );
+         $conn->register( [qw( STATUS_CHANGE )] )
+            ->on_fail( sub {
+               delete $self->{event_ids}{$nodeid};
+               $self->_pick_new_eventwatch
+            });
+      });
+   }
+}
+
+sub _on_status_change
+{
+   my $self = shift;
+   my ( $status, $addr ) = @_;
+   my $nodeid = _nodeid_to_string( $addr );
+
+   my $node = $self->{nodes}{$nodeid} or return;
+
+   # These updates can happen twice if there's two event connections but
+   # that's OK. Use the state to ensure printing only once
+
+   if( $status eq "DOWN" ) {
+      $self->debug_printf( "STATUS DOWN on {%s}", $nodeid ) if !exists $node->{down_time};
+      $node->{down_time} = time();
+   }
+   elsif( $status eq "UP" ) {
+      $self->debug_printf( "STATUS UP on {%s}", $nodeid ) if exists $node->{down_time};
+      delete $node->{down_time};
+   }
+}
+
 sub _get_a_node
 {
    my $self = shift;
 
-   defined $self->{primary} or die "ARGH: $self -> _get_a_node called with no defined PRIMARY";
-
    my $nodes = $self->{nodes};
 
-   if( my $node = $nodes->{$self->{primary}} ) {
+   # TODO: Other sorting strategies;
+   #   e.g. fewest outstanding queries, least accumulated time recently
+   my @nodeids;
+   {
+      my $next = $self->{next_primary} // 0;
+      @nodeids = keys %{ $self->{primary_ids} } or die "ARGH: $self -> _get_a_node called with no defined primaries";
+
+      # Rotate to the next in sequence
+      @nodeids = ( @nodeids[$next..$#nodeids], @nodeids[0..$next-1] );
+      ( $next += 1 ) %= @nodeids;
+
+      my $next_ready = $next;
+      # Skip non-ready ones
+      while( not $nodes->{$nodeids[0]}->{ready_f}->is_ready ) {
+         push @nodeids, shift @nodeids;
+         ( $next_ready += 1 ) %= @nodeids;
+         last if $next_ready == $next; # none were ready - just use the next
+      }
+      $self->{next_primary} = $next_ready;
+   }
+
+   if( my $node = $nodes->{ $nodeids[0] } ) {
       return $node->{ready_f};
    }
 
@@ -380,6 +556,32 @@ returns nothing.
 
 =cut
 
+sub _debug_wrap_result
+{
+   my ( $op, $self, $f ) = @_;
+
+   $f->on_ready( sub {
+      my $f = shift;
+      if( $f->failure ) {
+         $self->debug_printf( "$op => FAIL %s", scalar $f->failure );
+      }
+      elsif( my ( $type, $result ) = $f->get ) {
+         if( $type eq "rows" ) {
+            $result = sprintf "%d x %d columns", $result->rows, $result->columns;
+         }
+         elsif( $type eq "schema_change" ) {
+            $result = sprintf "%s %s", $result->[0], join ".", @{$result}[1..$#$result];
+         }
+         $self->debug_printf( "$op => %s %s", uc $type, $result );
+      }
+      else {
+         $self->debug_printf( "$op => VOID" );
+      }
+   }) if $IO::Async::Notifier::DEBUG;
+
+   return $f;
+}
+
 sub query
 {
    my $self = shift;
@@ -388,8 +590,10 @@ sub query
    $consistency //= $self->{default_consistency};
    defined $consistency or croak "'query' needs a consistency level";
 
-   $self->_get_a_node->then( sub {
-      shift->query( $cql, $consistency );
+   _debug_wrap_result QUERY => $self, $self->_get_a_node->then( sub {
+      my $node = shift;
+      $self->debug_printf( "QUERY on {%s}: %s", $node->nodeid, $cql );
+      $node->query( $cql, $consistency );
    });
 }
 
@@ -425,24 +629,34 @@ sub prepare
    my $self = shift;
    my ( $cql ) = @_;
 
+   $self->debug_printf( "PREPARE %s", $cql );
+
    my $queries = $self->{queries} ||= {};
 
-   $self->_get_a_node->then( sub {
-      shift->prepare( $cql, $self )
-   })->on_done( sub {
+   my @prepare_f = map {
+      my $node = $self->{nodes}{$_}{conn};
+      $node->prepare( $cql, $self )
+   } keys %{ $self->{primary_ids} };
+
+   Future->needs_all( @prepare_f )->then( sub {
       my ( $query ) = @_;
+      # Ignore the other objects; they'll all have the same ID anyway
+
+      $self->debug_printf( "PREPARE => [%s]", unpack "H*", $query->id );
 
       # Expire old ones
       defined $queries->{$_} or delete $queries->{$_} for keys %$queries;
       weaken( $queries->{$query->id} = $query );
+
+      Future->new->done( $query );
    });
 }
 
-=head2 $cass->execute( $id, $data, $consistency ) ==> ( $type, $result )
+=head2 $cass->execute( $query, $data, $consistency ) ==> ( $type, $result )
 
-Executes a previously-prepared statement, given its ID and the binding data.
-On success, the returned Future will yield results of the same form as the
-C<query> method. C<$data> should contain a list of encoded byte-string values.
+Executes a previously-prepared statement, given the binding data. On success,
+the returned Future will yield results of the same form as the C<query>
+method. C<$data> should contain a list of encoded byte-string values.
 
 Normally this method is not directly required - instead, use the C<execute>
 method on the query object itself, as this will encode the parameters
@@ -453,13 +667,15 @@ correctly.
 sub execute
 {
    my $self = shift;
-   my ( $id, $data, $consistency ) = @_;
+   my ( $query, $data, $consistency ) = @_;
 
    $consistency //= $self->{default_consistency};
    defined $consistency or croak "'execute' needs a consistency level";
 
-   $self->_get_a_node->then( sub {
-      shift->execute( $id, $data, $consistency );
+   _debug_wrap_result EXECUTE => $self, $self->_get_a_node->then( sub {
+      my $node = shift;
+      $self->debug_printf( "EXECUTE on {%s}: %s [%s]", $node->nodeid, $query->cql, unpack "H*", $query->id );
+      $node->execute( $query->id, $data, $consistency );
    });
 }
 
@@ -563,11 +779,7 @@ sub _list_nodes
             $type eq "rows" or Future->new->fail( "Expected 'rows' result" );
             my @nodes = $result->rows_hash;
             foreach my $node ( @nodes ) {
-               my $addrlen = length $node->{peer};
-               my $family = $addrlen ==  4 ? AF_INET :
-                            $addrlen == 16 ? AF_INET6 :
-                            die "Expected ADDRLEN 4 or 16";
-               $node->{host} = inet_ntop( $family, delete $node->{peer} );
+               $node->{host} = _inet_to_string( delete $node->{peer} );
             }
             Future->new->done( @nodes );
          }),
@@ -584,8 +796,11 @@ Allow storing multiple Cassandra seed node hostnames for startup.
 
 =item *
 
-Allow more than one primary node - roundrobin, or other load balancing
-strategies.
+Allow other load-balancing strategies than roundrobin.
+
+=item *
+
+Adjust connected primary nodes when changing C<primaries> parameter.
 
 =item *
 
@@ -593,12 +808,7 @@ Allow backup nodes, for faster connection failover.
 
 =item *
 
-Use C<TOPOLGY_CHANGE> and C<STATUS_CHANGE> events to keep the nodelist
-updated.
-
-=item *
-
-Node preference by C<data_center>.
+Use C<TOPOLGY_CHANGE> events to keep the nodelist updated.
 
 =back
 

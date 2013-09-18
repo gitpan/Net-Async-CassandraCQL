@@ -20,7 +20,7 @@ testing_loop( $loop );
 my ( $S1, $S2 ) = IO::Async::OS->socketpair() or die "Cannot create socket pair - $!";
 
 my $conn = Net::Async::CassandraCQL::Connection->new(
-   transport => IO::Async::Stream->new( handle => $S1 )
+   handle => $S1,
 );
 
 ok( defined $conn, 'defined $conn' );

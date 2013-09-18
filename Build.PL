@@ -9,7 +9,7 @@ my $build = Module::Build->new(
       'Compress::Snappy' => 0,
       'Future' => '0.17', # immediate bugfixes
       'IO::Async::Loop' => '0.54', # ->connect returns Future
-      'IO::Async::Protocol::Stream' => 0,
+      'IO::Async::Stream' => '0.59',
       'IO::Socket::IP' => 0,
       'Protocol::CassandraCQL' => '0.07', # parse_frame/build_frame functions
    },

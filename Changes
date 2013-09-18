@@ -1,5 +1,14 @@
 Revision history for Net-Async-CassandraCQL
 
+0.07    2013/09/18 18:20:45
+        [CHANGES]
+         * Allow connecting to multiple nodes, optionally with a preference
+           on which data center to pick nodes from
+         * Watch for STATUS_CHANGE events to keep node list updated on which
+           nodes are up or down
+         * Derive directly from IO::Async::Stream, not IaProtocol::Stream
+         * Added some IaNotifier ->debug_printf calls
+
 0.06    2013/09/12 17:39:26
         [CHANGES]
          * First attempt at clustering support - NaCassandraCQL object now

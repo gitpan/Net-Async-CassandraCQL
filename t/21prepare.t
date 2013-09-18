@@ -24,12 +24,13 @@ my $cass = Net::Async::CassandraCQL->new;
 
 # CHEATING
 $cass->add_child( my $conn = Net::Async::CassandraCQL::Connection->new(
-   transport => IO::Async::Stream->new( handle => $S1 )
+   handle => $S1,
 ) );
-no warnings 'redefine';
-local *Net::Async::CassandraCQL::_get_a_node = sub {
-   return Future->new->done( $conn );
-};
+$cass->{nodes} = { NODEID => {
+      conn    => $conn,
+      ready_f => Future->new->done( $conn ),
+} };
+$cass->{primary_ids} = { NODEID => 1 };
 # END CHEATING
 
 $loop->add( $cass );
@@ -62,7 +63,7 @@ $loop->add( $cass );
    is( $query->column_type(0)->name, "VARCHAR", '$query->column_type(0)->name' );
 
    # ->execute directly
-   $f = $cass->execute( "0123456789ABCDEF", [ "more-data" ], CONSISTENCY_ANY );
+   $f = $cass->execute( $query, [ "more-data" ], CONSISTENCY_ANY );
 
    $stream = "";
    wait_for_stream { length $stream >= 8 + 35 } $S2 => $stream;

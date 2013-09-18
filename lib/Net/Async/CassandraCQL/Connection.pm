@@ -9,9 +9,10 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
-use base qw( IO::Async::Protocol::Stream );
+use base qw( IO::Async::Stream );
+IO::Async::Stream->VERSION( '0.59' );
 
 use Carp;
 
@@ -167,10 +168,12 @@ sub connect
    my $self = shift;
    my %args = @_;
 
+   $args{socktype} ||= "stream";
+
    return ( $self->{connect_f} ||=
       $self->SUPER::connect( %args )->on_fail( sub { undef $self->{connect_f} } ) )
       ->and_then( sub {
-         $self->{nodeid} = $self->transport->read_handle->peerhost;
+         $self->{nodeid} = $self->read_handle->peerhost;
          $self->startup
       })->then( sub { Future->new->done( $self ) });
 }

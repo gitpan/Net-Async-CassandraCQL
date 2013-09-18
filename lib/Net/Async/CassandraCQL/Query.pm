@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use base qw( Protocol::CassandraCQL::ColumnMeta );
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 use Carp;
 
@@ -119,7 +119,7 @@ sub execute
 
    my @bytes = $self->encode_data( @data );
 
-   return $self->{cassandra}->execute( $self->id, \@bytes, $consistency );
+   return $self->{cassandra}->execute( $self, \@bytes, $consistency );
 }
 
 =head1 SPONSORS

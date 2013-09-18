@@ -65,6 +65,15 @@ PARAMETERS
             Optional. Default consistency level to use if none is provided
             to `query' or `execute'.
 
+    primaries => INT
+            Optional. The number of primary node connections to maintain.
+            Defaults to 1 if not specified.
+
+    prefer_dc => STRING
+            Optional. If set, prefer to pick primary nodes from the given
+            data center, only falling back on others if there are not enough
+            available.
+
 METHODS
   $str = $cass->quote( $str )
     Quotes a string argument suitable for inclusion in an immediate CQL
@@ -115,11 +124,11 @@ METHODS
     Prepares a CQL query for later execution. On success, the returned
     Future yields an instance of a prepared query object (see below).
 
-  $cass->execute( $id, $data, $consistency ) ==> ( $type, $result )
-    Executes a previously-prepared statement, given its ID and the binding
-    data. On success, the returned Future will yield results of the same
-    form as the `query' method. `$data' should contain a list of encoded
-    byte-string values.
+  $cass->execute( $query, $data, $consistency ) ==> ( $type, $result )
+    Executes a previously-prepared statement, given the binding data. On
+    success, the returned Future will yield results of the same form as the
+    `query' method. `$data' should contain a list of encoded byte-string
+    values.
 
     Normally this method is not directly required - instead, use the
     `execute' method on the query object itself, as this will encode the
@@ -163,15 +172,14 @@ TODO
     *       Allow storing multiple Cassandra seed node hostnames for
             startup.
 
-    *       Allow more than one primary node - roundrobin, or other load
-            balancing strategies.
+    *       Allow other load-balancing strategies than roundrobin.
+
+    *       Adjust connected primary nodes when changing `primaries'
+            parameter.
 
     *       Allow backup nodes, for faster connection failover.
 
-    *       Use `TOPOLGY_CHANGE' and `STATUS_CHANGE' events to keep the
-            nodelist updated.
-
-    *       Node preference by `data_center'.
+    *       Use `TOPOLGY_CHANGE' events to keep the nodelist updated.
 
 SPONSORS
     This code was paid for by

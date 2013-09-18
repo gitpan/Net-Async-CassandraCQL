@@ -7,6 +7,8 @@ use Test::More;
 use Test::Identity;
 use Test::Refcount;
 
+use t::MockConnection;
+
 use Net::Async::CassandraCQL;
 use Protocol::CassandraCQL::Result 0.06;
 
@@ -16,8 +18,7 @@ my %conns;
 local *Net::Async::CassandraCQL::_connect_node = sub {
    my $self = shift;
    my ( $connect_host, $connect_service ) = @_;
-   $conns{$connect_host} = my $conn = TestConnection->new;
-   $conn->{nodeid} = $connect_host;
+   $conns{$connect_host} = my $conn = t::MockConnection->new( $connect_host );
    return Future->new->done( $conn );
 };
 
@@ -27,14 +28,10 @@ my $cass = Net::Async::CassandraCQL->new(
 
 my $f = $cass->connect;
 
-ok( defined $conns{"10.0.0.1"}, 'have a connection to 10.0.0.1' );
-
-my @pending_queries;
-my @pending_prepares;
+ok( my $c = $conns{"10.0.0.1"}, 'have a connection to 10.0.0.1' );
 
 # Initial nodelist query
-while( @pending_queries ) {
-   my $q = shift @pending_queries;
+while( my $q = $c->next_query ) {
    if( $q->[1] eq "SELECT data_center, rack FROM system.local" ) {
       pass( "Query on system.local" );
       $q->[2]->done( rows =>
@@ -69,12 +66,14 @@ while( @pending_queries ) {
    }
 }
 
+ok( $f->is_ready, '->connect now done after initial queries' );
+$f->get;
+
 my $query;
 {
    my $f = $cass->prepare( "INSERT INTO t (f) = (?)" );
 
-   ok( scalar @pending_prepares, '->prepare pending' );
-   my $p = shift @pending_prepares;
+   ok( my $p = $c->next_prepare, '->prepare pending' );
 
    is( $p->[0], "10.0.0.1", 'nodeid of pending prepare' );
    is( $p->[1], "INSERT INTO t (f) = (?)", 'cql of pending prepare' );
@@ -103,12 +102,11 @@ my $query;
 undef $conns{"10.0.0.1"};
 $cass->_closed_node( "10.0.0.1" );
 
-ok( defined $conns{"10.0.0.2"}, 'new primary node picked' );
+ok( $c = $conns{"10.0.0.2"}, 'new primary node picked' );
 
 # Prepared statements
 {
-   ok( scalar @pending_prepares, 'prepare pending after reconnect' );
-   my $p = shift @pending_prepares;
+   ok( my $p = $c->next_prepare, 'prepare pending after reconnect' );
 
    is( $p->[0], "10.0.0.2", 'nodeid of pending prepare after reconnect' );
    is( $p->[1], "INSERT INTO t (f) = (?)", 'cql of pending prepare after reconnect' );
@@ -121,9 +119,8 @@ ok( defined $conns{"10.0.0.2"}, 'new primary node picked' );
    my $f = $cass->query( "GET THING", 0 );
    ok( defined $f, 'defined ->query after reconnect' );
 
-   ok( scalar @pending_queries, '->query after reconnect creates query' );
+   ok( my $q = $c->next_query, '->query after reconnect creates query' );
 
-   my $q = shift @pending_queries;
    like( $q->[0], qr/^10\.0\.0\.[23]$/, '$q conn' );
    is( $q->[1], "GET THING", '$q cql' );
    $q->[2]->done( result => "here" );
@@ -132,22 +129,3 @@ ok( defined $conns{"10.0.0.2"}, 'new primary node picked' );
 }
 
 done_testing;
-
-package TestConnection;
-use base qw( Net::Async::CassandraCQL::Connection );
-
-sub query
-{
-   my $self = shift;
-   my ( $cql ) = @_;
-   push @pending_queries, [ $self->nodeid, $cql, my $f = Future->new ];
-   return $f;
-}
-
-sub prepare
-{
-   my $self = shift;
-   my ( $cql ) = @_;
-   push @pending_prepares, [ $self->nodeid, $cql, my $f = Future->new ];
-   return $f;
-}
