@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 use base qw( IO::Async::Notifier );
 
@@ -136,6 +136,8 @@ sub _init
    $self->{on_status_change_cb} = $self->_replace_weakself( sub {
       shift->_on_status_change( @_ );
    });
+
+   $self->{queries_by_cql} = {}; # {$cql} => $query
 
    $self->SUPER::_init( $params );
 }
@@ -440,16 +442,17 @@ sub _ready_node
 
    $keyspace_f->then( sub {
       my $conn_f = Future->new->done( $conn );
-      return $conn_f unless my $queries = $self->{queries};
+      return $conn_f unless my $queries_by_cql = $self->{queries_by_cql};
 
       # Expire old ones
-      defined $queries->{$_} or delete $queries->{$_} for keys %$queries;
-      return $conn_f unless keys %$queries;
+      defined $queries_by_cql->{$_} or delete $queries_by_cql->{$_} for keys %$queries_by_cql;
+
+      return $conn_f unless keys %$queries_by_cql;
 
       ( fmap_void {
          my $query = shift;
          $conn->prepare( $query->cql, $self );
-      } foreach => [ values %$queries ] )
+      } foreach => [ values %$queries_by_cql ] )
          ->then( sub { $conn_f } );
    });
 }
@@ -487,18 +490,46 @@ sub _on_status_change
    my ( $status, $addr ) = @_;
    my $nodeid = _nodeid_to_string( $addr );
 
-   my $node = $self->{nodes}{$nodeid} or return;
+   my $nodes = $self->{nodes};
+   my $node = $nodes->{$nodeid} or return;
 
    # These updates can happen twice if there's two event connections but
    # that's OK. Use the state to ensure printing only once
 
    if( $status eq "DOWN" ) {
-      $self->debug_printf( "STATUS DOWN on {%s}", $nodeid ) if !exists $node->{down_time};
+      return if exists $node->{down_time};
+
+      $self->debug_printf( "STATUS DOWN on {%s}", $nodeid );
       $node->{down_time} = time();
    }
    elsif( $status eq "UP" ) {
-      $self->debug_printf( "STATUS UP on {%s}", $nodeid ) if exists $node->{down_time};
+      return if !exists $node->{down_time};
+
+      $self->debug_printf( "STATUS UP on {%s}", $nodeid );
       delete $node->{down_time};
+
+      return unless defined( my $dc = $self->{prefer_dc} );
+      return unless $node->{data_center} eq $dc;
+      return if $node->{conn};
+
+      # A node in a preferred data center is now up, and we don't already have
+      # a connection to it
+
+      my $old_nodeid;
+      $nodes->{$_}{data_center} ne $dc and $old_nodeid = $_, last for keys %{ $self->{primary_ids} };
+
+      return unless defined $old_nodeid;
+
+      # We do have a connection to a non-preferred node, so lets switch it
+
+      $self->_connect_new_primary( $nodeid );
+
+      # Don't pick it for new nodes
+      $self->debug_printf( "PRIMARY SWITCH %s -> %s", $old_nodeid, $nodeid );
+      delete $self->{primary_ids}{$old_nodeid};
+
+      # Close it when it's empty
+      $nodes->{$old_nodeid}{conn}->close_when_idle;
    }
 }
 
@@ -622,6 +653,10 @@ sub query_rows
 Prepares a CQL query for later execution. On success, the returned Future
 yields an instance of a prepared query object (see below).
 
+Query objects stored internally cached by the CQL string; subsequent calls to
+C<prepare> with the same exact CQL string will yield the same object
+immediately, saving a roundtrip.
+
 =cut
 
 sub prepare
@@ -629,9 +664,13 @@ sub prepare
    my $self = shift;
    my ( $cql ) = @_;
 
-   $self->debug_printf( "PREPARE %s", $cql );
+   my $queries_by_cql = $self->{queries_by_cql};
 
-   my $queries = $self->{queries} ||= {};
+   if( my $query = $queries_by_cql->{$cql} ) {
+      return Future->new->done( $query );
+   }
+
+   $self->debug_printf( "PREPARE %s", $cql );
 
    my @prepare_f = map {
       my $node = $self->{nodes}{$_}{conn};
@@ -645,8 +684,9 @@ sub prepare
       $self->debug_printf( "PREPARE => [%s]", unpack "H*", $query->id );
 
       # Expire old ones
-      defined $queries->{$_} or delete $queries->{$_} for keys %$queries;
-      weaken( $queries->{$query->id} = $query );
+      defined $queries_by_cql->{$_} or delete $queries_by_cql->{$_} for keys %$queries_by_cql;
+
+      weaken( $queries_by_cql->{$query->cql} = $query );
 
       Future->new->done( $query );
    });
@@ -808,7 +848,7 @@ Allow backup nodes, for faster connection failover.
 
 =item *
 
-Use C<TOPOLGY_CHANGE> events to keep the nodelist updated.
+Use C<TOPOLOGY_CHANGE> events to keep the nodelist updated.
 
 =back
 

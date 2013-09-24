@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 use base qw( IO::Async::Stream );
 IO::Async::Stream->VERSION( '0.59' );
@@ -178,6 +178,13 @@ sub connect
       })->then( sub { Future->new->done( $self ) });
 }
 
+sub _has_pending
+{
+   my $self = shift;
+   defined and return 1 for @{ $self->{streams} };
+   return 0;
+}
+
 sub on_read
 {
    my $self = shift;
@@ -214,6 +221,9 @@ sub on_read
       if( my $next = shift @{ $self->{pending} } ) {
          my ( $opcode, $frame, $f ) = @$next;
          $self->_send( $opcode, $streamid, $frame, $f );
+      }
+      elsif( $self->{conn_closing} and !$self->_has_pending ) {
+         $self->close;
       }
    }
    elsif( $streamid == 0 and $opcode == OPCODE_ERROR ) {
@@ -309,6 +319,8 @@ sub send_message
 {
    my $self = shift;
    my ( $opcode, $frame ) = @_;
+
+   croak "Cannot ->send_message when in close-pending state" if $self->{conn_closing};
 
    my $f = $self->loop->new_future;
 
@@ -551,6 +563,26 @@ sub register
 
       return Future->new->done;
    });
+}
+
+=head2 $conn->close_when_idle
+
+If the connection is idle (has no outstanding queries), then it is closed
+immediately. If not, it is put into close-pending mode, where it will accept
+no more queries, and will close when the last pending one is complete.
+
+=cut
+
+sub close_when_idle
+{
+   my $self = shift;
+
+   if( $self->_has_pending ) {
+      $self->{conn_closing} = 1;
+   }
+   else {
+      $self->close;
+   }
 }
 
 =head1 SPONSORS

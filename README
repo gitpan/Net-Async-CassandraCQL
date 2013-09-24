@@ -124,6 +124,10 @@ METHODS
     Prepares a CQL query for later execution. On success, the returned
     Future yields an instance of a prepared query object (see below).
 
+    Query objects stored internally cached by the CQL string; subsequent
+    calls to `prepare' with the same exact CQL string will yield the same
+    object immediately, saving a roundtrip.
+
   $cass->execute( $query, $data, $consistency ) ==> ( $type, $result )
     Executes a previously-prepared statement, given the binding data. On
     success, the returned Future will yield results of the same form as the
@@ -179,7 +183,7 @@ TODO
 
     *       Allow backup nodes, for faster connection failover.
 
-    *       Use `TOPOLGY_CHANGE' events to keep the nodelist updated.
+    *       Use `TOPOLOGY_CHANGE' events to keep the nodelist updated.
 
 SPONSORS
     This code was paid for by

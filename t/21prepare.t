@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
+use Test::Identity;
 use Test::HexString;
 
 use IO::Async::Test;
@@ -61,6 +62,12 @@ $loop->add( $cass );
    is( $query->columns, 1, '$query->columns' );
    is( scalar $query->column_name(0), "test.t.f", '$query->column_name(0)' );
    is( $query->column_type(0)->name, "VARCHAR", '$query->column_type(0)->name' );
+
+   my $f2 = $cass->prepare( "INSERT INTO t (f) = (?)" );
+
+   ok( $f2->is_ready, 'Duplicate prepare is ready immediately' );
+
+   identical( scalar $f2->get, $query, 'Duplicate prepare yields same object' );
 
    # ->execute directly
    $f = $cass->execute( $query, [ "more-data" ], CONSISTENCY_ANY );

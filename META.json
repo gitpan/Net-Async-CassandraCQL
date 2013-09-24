@@ -38,15 +38,15 @@
    "provides" : {
       "Net::Async::CassandraCQL" : {
          "file" : "lib/Net/Async/CassandraCQL.pm",
-         "version" : "0.07"
+         "version" : "0.08"
       },
       "Net::Async::CassandraCQL::Connection" : {
          "file" : "lib/Net/Async/CassandraCQL/Connection.pm",
-         "version" : "0.07"
+         "version" : "0.08"
       },
       "Net::Async::CassandraCQL::Query" : {
          "file" : "lib/Net/Async/CassandraCQL/Query.pm",
-         "version" : "0.07"
+         "version" : "0.08"
       }
    },
    "release_status" : "stable",
@@ -55,5 +55,5 @@
          "http://dev.perl.org/licenses/"
       ]
    },
-   "version" : "0.07"
+   "version" : "0.08"
 }
