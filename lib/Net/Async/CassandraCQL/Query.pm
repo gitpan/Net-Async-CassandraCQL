@@ -9,9 +9,11 @@ use strict;
 use warnings;
 use base qw( Protocol::CassandraCQL::ColumnMeta );
 
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 
 use Carp;
+
+use Devel::GlobalDestruction qw( in_global_destruction );
 
 =head1 NAME
 
@@ -56,6 +58,15 @@ sub new
    $self->{id}        = $args{id};
 
    return $self;
+}
+
+sub DESTROY
+{
+   return if in_global_destruction;
+   my $self = shift;
+   my $cass = $self->{cassandra} or return;
+
+   $cass->_expire_query( $self->cql );
 }
 
 =head1 METHODS

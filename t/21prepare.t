@@ -6,6 +6,7 @@ use warnings;
 use Test::More;
 use Test::Identity;
 use Test::HexString;
+use Test::Refcount;
 
 use IO::Async::Test;
 use IO::Async::OS;
@@ -15,6 +16,8 @@ use IO::Async::Stream;
 use Net::Async::CassandraCQL;
 use Net::Async::CassandraCQL::Connection;
 use Protocol::CassandraCQL qw( CONSISTENCY_ANY CONSISTENCY_ONE CONSISTENCY_TWO );
+
+use constant CQL_STRING => "INSERT INTO t (f) = (?)";
 
 my $loop = IO::Async::Loop->new();
 testing_loop( $loop );
@@ -38,7 +41,7 @@ $loop->add( $cass );
 
 # ->prepare and ->execute
 {
-   my $f = $cass->prepare( "INSERT INTO t (f) = (?)" );
+   my $f = $cass->prepare( CQL_STRING );
 
    my $stream = "";
    wait_for_stream { length $stream >= 8 + 27 } $S2 => $stream;
@@ -57,17 +60,23 @@ $loop->add( $cass );
    wait_for { $f->is_ready };
 
    my $query = $f->get;
+   undef $f;
+
+   is_oneref( $query, '$query has refcount 1 after ->prepare' );
+
    is( $query->id, "0123456789ABCDEF", '$query->id after ->prepare->get' );
    is( $query->cql, "INSERT INTO t (f) = (?)", '$query->cql after ->prepare->get' );
    is( $query->columns, 1, '$query->columns' );
    is( scalar $query->column_name(0), "test.t.f", '$query->column_name(0)' );
    is( $query->column_type(0)->name, "VARCHAR", '$query->column_type(0)->name' );
 
-   my $f2 = $cass->prepare( "INSERT INTO t (f) = (?)" );
+   {
+      my $f2 = $cass->prepare( CQL_STRING );
 
-   ok( $f2->is_ready, 'Duplicate prepare is ready immediately' );
+      ok( $f2->is_ready, 'Duplicate prepare is ready immediately' );
 
-   identical( scalar $f2->get, $query, 'Duplicate prepare yields same object' );
+      identical( scalar $f2->get, $query, 'Duplicate prepare yields same object' );
+   }
 
    # ->execute directly
    $f = $cass->execute( $query, [ "more-data" ], CONSISTENCY_ANY );
@@ -134,6 +143,31 @@ $loop->add( $cass );
 
    is_deeply( [ $f->get ], [],
               '->execute returns nothing' );
+
+   is_oneref( $query, '$query has refcount 1 before EOF' );
+   undef $query;
+
+   # Should now be weak with a timer
+   # CHEATING
+   ok( defined $cass->{queries_by_cql}{+CQL_STRING}[1],
+       'Query has expiry timer' );
+
+   # A second ->prepare should re-vivify it
+   $f = $cass->prepare( CQL_STRING );
+
+   ok( $f->is_ready, '->prepare again is ready immediately' );
+   ok( !defined $cass->{queries_by_cql}{+CQL_STRING}[1],
+       'Expiry timer cancelled after re-vivify' );
+
+   # Now drop it one last time
+   undef $f;
+   undef $query;
+
+   # Rather than wait for the timer, just fire it now
+   $cass->{queries_by_cql}{+CQL_STRING}[1]->done;
+
+   ok( !keys %{ $cass->{queries_by_cql} },
+       '$cass has no more cached queries after timer expire' );
 }
 
 done_testing;

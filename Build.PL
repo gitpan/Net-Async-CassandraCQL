@@ -7,6 +7,7 @@ my $build = Module::Build->new(
    module_name => 'Net::Async::CassandraCQL',
    requires => {
       'Compress::Snappy' => 0,
+      'Devel::GlobalDestruction' => 0,
       'Future' => '0.17', # immediate bugfixes
       'IO::Async::Loop' => '0.54', # ->connect returns Future
       'IO::Async::Stream' => '0.59',

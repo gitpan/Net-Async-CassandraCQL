@@ -128,4 +128,9 @@ ok( $c = $conns{"10.0.0.2"}, 'new primary node picked' );
    is_deeply( [ $f->get ], [ result => "here" ], '$q result' );
 }
 
+# CHEATING
+# $query->DESTROY will try to register it for late expiry on the underlying
+# Cassandra object. We can convince it not to do that
+undef $query->{cassandra};
+
 done_testing;

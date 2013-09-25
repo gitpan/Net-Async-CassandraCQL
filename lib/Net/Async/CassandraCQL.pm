@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 
 use base qw( IO::Async::Notifier );
 
@@ -137,7 +137,10 @@ sub _init
       shift->_on_status_change( @_ );
    });
 
-   $self->{queries_by_cql} = {}; # {$cql} => $query
+   $self->{queries_by_cql} = {}; # {$cql} => [$query, $expire_timer_f]
+   # Can be in two states:
+   #   $query is_weak; timer undef => normal user use
+   #   $query non-weak; timer exists => due to expire soon
 
    $self->SUPER::_init( $params );
 }
@@ -443,14 +446,10 @@ sub _ready_node
    $keyspace_f->then( sub {
       my $conn_f = Future->new->done( $conn );
       return $conn_f unless my $queries_by_cql = $self->{queries_by_cql};
-
-      # Expire old ones
-      defined $queries_by_cql->{$_} or delete $queries_by_cql->{$_} for keys %$queries_by_cql;
-
       return $conn_f unless keys %$queries_by_cql;
 
       ( fmap_void {
-         my $query = shift;
+         my $query = shift->[0] or return Future->new->done;
          $conn->prepare( $query->cql, $self );
       } foreach => [ values %$queries_by_cql ] )
          ->then( sub { $conn_f } );
@@ -473,7 +472,7 @@ sub _pick_new_eventwatch
       $node->{ready_f}->on_done( sub {
          my $conn = shift;
          $conn->configure(
-            on_status_change => $self->{on_status_change_cb},
+            on_status_change   => $self->{on_status_change_cb},
          );
          $conn->register( [qw( STATUS_CHANGE )] )
             ->on_fail( sub {
@@ -666,7 +665,13 @@ sub prepare
 
    my $queries_by_cql = $self->{queries_by_cql};
 
-   if( my $query = $queries_by_cql->{$cql} ) {
+   if( my $q = $queries_by_cql->{$cql} ) {
+      my $query = $q->[0];
+      if( $q->[1] ) {
+         $q->[1]->cancel;
+         undef $q->[1];
+         weaken( $q->[0] );
+      }
       return Future->new->done( $query );
    }
 
@@ -683,13 +688,30 @@ sub prepare
 
       $self->debug_printf( "PREPARE => [%s]", unpack "H*", $query->id );
 
-      # Expire old ones
-      defined $queries_by_cql->{$_} or delete $queries_by_cql->{$_} for keys %$queries_by_cql;
-
-      weaken( $queries_by_cql->{$query->cql} = $query );
+      my $q = $queries_by_cql->{$cql} = [ $query, undef ];
+      weaken( $q->[0] );
 
       Future->new->done( $query );
    });
+}
+
+sub _expire_query
+{
+   my $self = shift;
+   my ( $cql ) = @_;
+
+   my $queries_by_cql = $self->{queries_by_cql};
+   my $q = $queries_by_cql->{$cql} or return;
+
+   my $query = $q->[0]; undef $q->[0]; $q->[0] = $query; # unweaken
+
+   $q->[1] = $self->loop->delay_future( after => 60 )
+      ->on_done( sub {
+         # Remove the {cassandra} element from the query so it doesn't
+         # re-register itself for expiry when it is DESTROYed again
+         undef $q->[0]{cassandra};
+         delete $queries_by_cql->{$cql};
+      });
 }
 
 =head2 $cass->execute( $query, $data, $consistency ) ==> ( $type, $result )
