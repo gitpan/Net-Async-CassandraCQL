@@ -43,11 +43,31 @@ DESCRIPTION
     It is based on Protocol::CassandraCQL, which more completely documents
     the behaviours and limits of its ability to communicate with Cassandra.
 
+EVENTS
+  on_node_up $nodeid
+  on_node_down $nodeid
+    The node's status has changed. `$nodeid' is the node's IP address as a
+    text string.
+
+  on_node_new $nodeid
+  on_node_removed $nodeid
+    A new node has been added to the cluster, or an existing node has been
+    decommissioned and removed.
+
+    These four events are obtained from event watches on the actual node
+    connections and filtered to remove duplicates. The use of multiple
+    primaries should improve the reliability of notifications, though if
+    multiple nodes fail at or around the same time this may go unreported,
+    as no node will ever report its own failure.
+
 PARAMETERS
     The following named parameters may be passed to `new' or `configure':
 
     host => STRING
-            The hostname of the Cassandra node to connect to
+    hosts => ARRAY of STRING
+            The hostnames of Cassandra node to connect to initially. If more
+            than one host is provided in an array, they will be attempted
+            sequentially until one succeeds during the intial connect phase.
 
     service => STRING
             Optional. The service name or port number to connect to.
@@ -74,6 +94,10 @@ PARAMETERS
             data center, only falling back on others if there are not enough
             available.
 
+    cql_version => INT
+            Optional. Version of the CQL wire protocol to negotiate during
+            connection. Defaults to 1.
+
 METHODS
   $str = $cass->quote( $str )
     Quotes a string argument suitable for inclusion in an immediate CQL
@@ -92,13 +116,29 @@ METHODS
     Takes the following named arguments:
 
     host => STRING
+    hosts => ARRAY of STRING
     service => STRING
 
-    A host name is required, either as a named argument or as a configured
-    value on the object. If the service name is missing, the default CQL
-    port will be used instead.
+    A set of host names are required, either as a named argument or as a
+    configured value on the object. If the service name is missing, the
+    default CQL port will be used instead.
 
-  $cass->query( $cql, $consistency ) ==> ( $type, $result )
+  $cass->close_when_idle ==> $cass
+    Stops accepting new queries and prepares all the existing connections to
+    be closed once every outstanding query has been responded to. Returns a
+    future that will eventually yield the CassandraCQL object, when all the
+    connections are closed.
+
+    After calling this method it will be an error to invoke `query',
+    `prepare', `execute' or the various other methods derived from them.
+
+  $cass->close_now
+    Immediately closes all node connections and shuts down the object. Any
+    outstanding or queued queries will immediately fail. Consider this as a
+    "last resort" failure shutdown, as compared to the graceful draining
+    behaviour of `close_when_idle'.
+
+  $cass->query( $cql, $consistency, %other_args ) ==> ( $type, $result )
     Performs a CQL query. On success, the values returned from the Future
     will depend on the type of query.
 
@@ -115,7 +155,31 @@ METHODS
     For other queries, such as `INSERT', `UPDATE' and `DELETE', the future
     returns nothing.
 
-  $cass->query_rows( $cql, $consistency ) ==> $result
+    `%other_args' may be any of the following, when using `cql_version' 2 or
+    above:
+
+    skip_metadata => BOOL
+            Requests the server does not include result metadata in the
+            response. It will be up to the caller to provide this, via
+            `set_metadata' on the returned Result object, before it can be
+            used.
+
+    page_size => INT
+            Requests that the server returns at most the given number of
+            rows. If any further remain, the result object will include the
+            `paging_state' field. This can be passed in another `query' call
+            to obtain the next set of data.
+
+    paging_state => INT
+            Requests that the server continues a paged request from this
+            position, given in a previous response.
+
+    serial_consistency => INT
+            Sets the consistency level for serial operations in the query.
+            Must be one of `CONSISTENCY_SERIAL' or
+            `CONSISTENCY_LOCAL_SERIAL'.
+
+  $cass->query_rows( $cql, $consistency, %other_args ) ==> $result
     A shortcut wrapper for `query' which expects a `rows' result and returns
     it directly. Any other result is treated as an error. The returned
     Future returns a `Protocol::CassandraCQL::Result' directly
@@ -128,7 +192,7 @@ METHODS
     calls to `prepare' with the same exact CQL string will yield the same
     object immediately, saving a roundtrip.
 
-  $cass->execute( $query, $data, $consistency ) ==> ( $type, $result )
+  $cass->execute( $query, $data, $consistency, %other_args ) ==> ( $type, $result )
     Executes a previously-prepared statement, given the binding data. On
     success, the returned Future will yield results of the same form as the
     `query' method. `$data' should contain a list of encoded byte-string
@@ -137,6 +201,8 @@ METHODS
     Normally this method is not directly required - instead, use the
     `execute' method on the query object itself, as this will encode the
     parameters correctly.
+
+    `%other_args' may be as for the `query' method.
 
 CONVENIENT WRAPPERS
     The following wrapper methods all wrap the basic `query' operation.
@@ -173,9 +239,6 @@ CONVENIENT WRAPPERS
      my $columns = $result->rowmap_hash( "column_name" )
 
 TODO
-    *       Allow storing multiple Cassandra seed node hostnames for
-            startup.
-
     *       Allow other load-balancing strategies than roundrobin.
 
     *       Adjust connected primary nodes when changing `primaries'
@@ -183,7 +246,9 @@ TODO
 
     *       Allow backup nodes, for faster connection failover.
 
-    *       Use `TOPOLOGY_CHANGE' events to keep the nodelist updated.
+    *       Support LZ4 compression when using CQL version 2.
+
+            This is blocked on RT #92825
 
 SPONSORS
     This code was paid for by

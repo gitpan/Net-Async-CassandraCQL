@@ -20,6 +20,7 @@ local *Net::Async::CassandraCQL::_connect_node = sub {
    my $self = shift;
    my ( $connect_host, $connect_service ) = @_;
    $conns{$connect_host} = my $conn = t::MockConnection->new( $connect_host );
+   $self->add_child( $conn );
    return Future->new->done( $conn );
 };
 
@@ -68,10 +69,19 @@ my $event_c;
 $_->is_registered and $event_c = $_, last for @conns{qw( 10.0.0.1 10.0.0.2 10.0.0.3 )};
 
 # 10.0.0.3 is up again, we should now switch to it
-$event_c->invoke_event(
-   on_status_change => UP => pack_sockaddr_in( 0, inet_aton( "10.0.0.3" ) ),
-);
+# ->close_when_idle needs an IO::Async::Loop for the future
+{
+   require IO::Async::Loop;
+   my $loop = IO::Async::Loop->new;
+   $loop->add( $cass );
 
-ok( defined $conns{"10.0.0.3"}, '10.0.0.3 now connected again' );
+   $event_c->invoke_event(
+      on_status_change => UP => pack_sockaddr_in( 0, inet_aton( "10.0.0.3" ) ),
+   );
+
+   ok( defined $conns{"10.0.0.3"}, '10.0.0.3 now connected again' );
+
+   $loop->remove( $cass );
+}
 
 done_testing;

@@ -24,6 +24,7 @@ t/22clustering.t
 t/23clustering-primaries.t
 t/24clustering-events.t
 t/25clustering-prefer-dc.t
+t/30compression.t
 t/90local.t
 t/99pod.t
 t/MockConnection.pm

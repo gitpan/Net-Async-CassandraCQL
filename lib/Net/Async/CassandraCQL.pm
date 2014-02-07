@@ -1,7 +1,7 @@
 #  You may distribute under the terms of either the GNU General Public License
 #  or the Artistic License (the same terms as Perl itself)
 #
-#  (C) Paul Evans, 2013 -- leonerd@leonerd.org.uk
+#  (C) Paul Evans, 2013-2014 -- leonerd@leonerd.org.uk
 
 package Net::Async::CassandraCQL;
 
@@ -9,13 +9,13 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 use base qw( IO::Async::Notifier );
 
 use Carp;
 
-use Future::Utils qw( fmap_void );
+use Future::Utils qw( fmap_void try_repeat_until_success );
 use List::Util qw( shuffle );
 use Scalar::Util qw( weaken );
 use Socket qw( inet_ntop getnameinfo AF_INET AF_INET6 NI_NUMERICHOST NIx_NOSERV );
@@ -81,6 +81,30 @@ behaviours and limits of its ability to communicate with Cassandra.
 
 =cut
 
+=head1 EVENTS
+
+=head2 on_node_up $nodeid
+
+=head2 on_node_down $nodeid
+
+The node's status has changed. C<$nodeid> is the node's IP address as a text
+string.
+
+=head2 on_node_new $nodeid
+
+=head2 on_node_removed $nodeid
+
+A new node has been added to the cluster, or an existing node has been
+decommissioned and removed.
+
+These four events are obtained from event watches on the actual node
+connections and filtered to remove duplicates. The use of multiple primaries
+should improve the reliability of notifications, though if multiple nodes fail
+at or around the same time this may go unreported, as no node will ever report
+its own failure.
+
+=cut
+
 =head1 PARAMETERS
 
 The following named parameters may be passed to C<new> or C<configure>:
@@ -89,7 +113,11 @@ The following named parameters may be passed to C<new> or C<configure>:
 
 =item host => STRING
 
-The hostname of the Cassandra node to connect to
+=item hosts => ARRAY of STRING
+
+The hostnames of Cassandra node to connect to initially. If more than one host
+is provided in an array, they will be attempted sequentially until one
+succeeds during the intial connect phase.
 
 =item service => STRING
 
@@ -121,6 +149,11 @@ not specified.
 Optional. If set, prefer to pick primary nodes from the given data center,
 only falling back on others if there are not enough available.
 
+=item cql_version => INT
+
+Optional. Version of the CQL wire protocol to negotiate during connection.
+Defaults to 1.
+
 =back
 
 =cut
@@ -133,6 +166,9 @@ sub _init
    $params->{primaries} //= 1;
 
    # precache these weasels only once
+   $self->{on_topology_change_cb} = $self->_replace_weakself( sub {
+      shift->_on_topology_change( @_ );
+   });
    $self->{on_status_change_cb} = $self->_replace_weakself( sub {
       shift->_on_status_change( @_ );
    });
@@ -142,6 +178,8 @@ sub _init
    #   $query is_weak; timer undef => normal user use
    #   $query non-weak; timer exists => due to expire soon
 
+   $self->{cql_version} = 1;
+
    $self->SUPER::_init( $params );
 }
 
@@ -150,8 +188,13 @@ sub configure
    my $self = shift;
    my %params = @_;
 
-   foreach (qw( host service username password keyspace default_consistency
-                prefer_dc )) {
+   if( defined $params{host} ) {
+      $params{hosts} ||= [ delete $params{host} ];
+   }
+
+   foreach (qw( hosts service username password keyspace default_consistency
+                prefer_dc cql_version
+                on_node_up on_node_down on_node_new on_node_removed )) {
       $self->{$_} = delete $params{$_} if exists $params{$_};
    }
 
@@ -239,13 +282,15 @@ Takes the following named arguments:
 
 =item host => STRING
 
+=item hosts => ARRAY of STRING
+
 =item service => STRING
 
 =back
 
-A host name is required, either as a named argument or as a configured value
-on the object. If the service name is missing, the default CQL port will be
-used instead.
+A set of host names are required, either as a named argument or as a
+configured value on the object. If the service name is missing, the default
+CQL port will be used instead.
 
 =cut
 
@@ -264,7 +309,7 @@ sub _connect_node
          $self->remove_child( $node );
          $self->_closed_node( $node->nodeid );
       },
-      map { $_ => $self->{$_} } qw( username password ),
+      map { $_ => $self->{$_} } qw( username password cql_version ),
    );
    $self->add_child( $conn );
 
@@ -285,6 +330,7 @@ sub _closed_node
 
    my $now = time();
 
+   $self->{nodes} or return;
    my $node = $self->{nodes}{$nodeid} or return;
 
    undef $node->{conn};
@@ -328,10 +374,14 @@ sub connect
 
    my $conn;
 
-   $self->_connect_node(
-      $args{host}    // $self->{host},
-      $args{service},
-   )->then( sub {
+   my @hosts = $args{hosts}        ? @{ $args{hosts} } :
+               defined $args{host} ? ( $args{host} ) :
+                                     @{ $self->{hosts} || [] };
+   @hosts or croak "Require initial hostnames to ->connect to";
+
+   ( try_repeat_until_success {
+      $self->_connect_node( $_[0], $args{service} )
+   } foreach => \@hosts )->then( sub {
       ( $conn ) = @_;
       $self->_list_nodes( $conn );
    })->then( sub {
@@ -472,14 +522,52 @@ sub _pick_new_eventwatch
       $node->{ready_f}->on_done( sub {
          my $conn = shift;
          $conn->configure(
+            on_topology_change => $self->{on_topology_change_cb},
             on_status_change   => $self->{on_status_change_cb},
          );
-         $conn->register( [qw( STATUS_CHANGE )] )
+         $conn->register( [qw( TOPOLOGY_CHANGE STATUS_CHANGE )] )
             ->on_fail( sub {
                delete $self->{event_ids}{$nodeid};
                $self->_pick_new_eventwatch
             });
       });
+   }
+}
+
+sub _on_topology_change
+{
+   my $self = shift;
+   my ( $type, $addr ) = @_;
+   my $nodeid = _nodeid_to_string( $addr );
+
+   my $nodes = $self->{nodes};
+
+   # These updates can happen twice if there's two event connections but
+   # that's OK. Use the state to ensure printing only once
+
+   if( $type eq "NEW_NODE" ) {
+      return if exists $nodes->{$nodeid};
+
+      $nodes->{$nodeid} = {};
+
+      $self->query_rows( "SELECT peer, data_center, rack FROM system.peers WHERE peer = " . $self->quote( $nodeid ), CONSISTENCY_ONE )
+         ->on_done( sub {
+            my ( $result ) = @_;
+            my $node = $result->row_hash( 0 );
+            $node->{host} = _inet_to_string( delete $node->{peer} );
+
+            %{$nodes->{$nodeid}} = %$node;
+
+            $self->debug_printf( "NEW_NODE {%s}", $nodeid );
+            $self->maybe_invoke_event( on_node_new => $nodeid );
+         });
+   }
+   elsif( $type eq "REMOVED_NODE" ) {
+      return if !exists $nodes->{$nodeid};
+
+      delete $nodes->{$nodeid};
+      $self->debug_printf( "REMOVED_NODE {%s}", $nodeid );
+      $self->maybe_invoke_event( on_node_removed => $nodeid );
    }
 }
 
@@ -499,12 +587,16 @@ sub _on_status_change
       return if exists $node->{down_time};
 
       $self->debug_printf( "STATUS DOWN on {%s}", $nodeid );
+      $self->maybe_invoke_event( on_node_down => $nodeid );
+
       $node->{down_time} = time();
    }
    elsif( $status eq "UP" ) {
       return if !exists $node->{down_time};
 
       $self->debug_printf( "STATUS UP on {%s}", $nodeid );
+      $self->maybe_invoke_event( on_node_up => $nodeid );
+
       delete $node->{down_time};
 
       return unless defined( my $dc = $self->{prefer_dc} );
@@ -532,11 +624,69 @@ sub _on_status_change
    }
 }
 
-sub _get_a_node
+=head2 $cass->close_when_idle ==> $cass
+
+Stops accepting new queries and prepares all the existing connections to be
+closed once every outstanding query has been responded to. Returns a future
+that will eventually yield the CassandraCQL object, when all the connections
+are closed.
+
+After calling this method it will be an error to invoke C<query>, C<prepare>,
+C<execute> or the various other methods derived from them.
+
+=cut
+
+sub close_when_idle
 {
    my $self = shift;
 
    my $nodes = $self->{nodes};
+
+   # remove 'nodes' to avoid reconnect logic
+   undef $self->{nodes};
+   undef $self->{primary_ids};
+
+   my @f;
+   foreach my $node ( values %$nodes ) {
+      next unless my $conn = $node->{conn};
+      push @f, $conn->close_when_idle;
+   }
+
+   return Future->wait_all( @f )->then( sub {
+      return Future->new->done( $self );
+   });
+}
+
+=head2 $cass->close_now
+
+Immediately closes all node connections and shuts down the object. Any
+outstanding or queued queries will immediately fail. Consider this as a "last
+resort" failure shutdown, as compared to the graceful draining behaviour of
+C<close_when_idle>.
+
+=cut
+
+sub close_now
+{
+   my $self = shift;
+
+   my $nodes = $self->{nodes};
+
+   # remove 'nodes' to avoid reconnect logic
+   undef $self->{nodes};
+   undef $self->{primary_ids};
+
+   foreach my $node ( values %$nodes ) {
+      next unless my $conn = $node->{conn};
+      $conn->close_now;
+   }
+}
+
+sub _get_a_node
+{
+   my $self = shift;
+
+   my $nodes = $self->{nodes} or die "No available nodes";
 
    # TODO: Other sorting strategies;
    #   e.g. fewest outstanding queries, least accumulated time recently
@@ -566,7 +716,7 @@ sub _get_a_node
    die "ARGH: don't have a primary node";
 }
 
-=head2 $cass->query( $cql, $consistency ) ==> ( $type, $result )
+=head2 $cass->query( $cql, $consistency, %other_args ) ==> ( $type, $result )
 
 Performs a CQL query. On success, the values returned from the Future will
 depend on the type of query.
@@ -583,6 +733,35 @@ L<Protocol::CassandraCQL::Result> containing the returned row data.
 
 For other queries, such as C<INSERT>, C<UPDATE> and C<DELETE>, the future
 returns nothing.
+
+C<%other_args> may be any of the following, when using C<cql_version> 2 or
+above:
+
+=over 8
+
+=item skip_metadata => BOOL
+
+Requests the server does not include result metadata in the response. It will
+be up to the caller to provide this, via C<set_metadata> on the returned
+Result object, before it can be used.
+
+=item page_size => INT
+
+Requests that the server returns at most the given number of rows. If any
+further remain, the result object will include the C<paging_state> field. This
+can be passed in another C<query> call to obtain the next set of data.
+
+=item paging_state => INT
+
+Requests that the server continues a paged request from this position, given
+in a previous response.
+
+=item serial_consistency => INT
+
+Sets the consistency level for serial operations in the query. Must be one of
+C<CONSISTENCY_SERIAL> or C<CONSISTENCY_LOCAL_SERIAL>.
+
+=back
 
 =cut
 
@@ -615,7 +794,7 @@ sub _debug_wrap_result
 sub query
 {
    my $self = shift;
-   my ( $cql, $consistency ) = @_;
+   my ( $cql, $consistency, %other_args ) = @_;
 
    $consistency //= $self->{default_consistency};
    defined $consistency or croak "'query' needs a consistency level";
@@ -623,11 +802,11 @@ sub query
    _debug_wrap_result QUERY => $self, $self->_get_a_node->then( sub {
       my $node = shift;
       $self->debug_printf( "QUERY on {%s}: %s", $node->nodeid, $cql );
-      $node->query( $cql, $consistency );
+      $node->query( $cql, $consistency, %other_args );
    });
 }
 
-=head2 $cass->query_rows( $cql, $consistency ) ==> $result
+=head2 $cass->query_rows( $cql, $consistency, %other_args ) ==> $result
 
 A shortcut wrapper for C<query> which expects a C<rows> result and returns it
 directly. Any other result is treated as an error. The returned Future returns
@@ -638,9 +817,8 @@ a C<Protocol::CassandraCQL::Result> directly
 sub query_rows
 {
    my $self = shift;
-   my ( $cql, $consistency ) = @_;
 
-   $self->query( $cql, $consistency )->then( sub {
+   $self->query( @_ )->then( sub {
       my ( $type, $result ) = @_;
       $type eq "rows" or Future->new->fail( "Expected 'rows' result" );
       Future->new->done( $result );
@@ -663,6 +841,8 @@ sub prepare
    my $self = shift;
    my ( $cql ) = @_;
 
+   my $nodes = $self->{nodes} or die "No available nodes";
+
    my $queries_by_cql = $self->{queries_by_cql};
 
    if( my $q = $queries_by_cql->{$cql} ) {
@@ -678,7 +858,7 @@ sub prepare
    $self->debug_printf( "PREPARE %s", $cql );
 
    my @prepare_f = map {
-      my $node = $self->{nodes}{$_}{conn};
+      my $node = $nodes->{$_}{conn};
       $node->prepare( $cql, $self )
    } keys %{ $self->{primary_ids} };
 
@@ -714,7 +894,7 @@ sub _expire_query
       });
 }
 
-=head2 $cass->execute( $query, $data, $consistency ) ==> ( $type, $result )
+=head2 $cass->execute( $query, $data, $consistency, %other_args ) ==> ( $type, $result )
 
 Executes a previously-prepared statement, given the binding data. On success,
 the returned Future will yield results of the same form as the C<query>
@@ -724,12 +904,14 @@ Normally this method is not directly required - instead, use the C<execute>
 method on the query object itself, as this will encode the parameters
 correctly.
 
+C<%other_args> may be as for the C<query> method.
+
 =cut
 
 sub execute
 {
    my $self = shift;
-   my ( $query, $data, $consistency ) = @_;
+   my ( $query, $data, $consistency, %other_args ) = @_;
 
    $consistency //= $self->{default_consistency};
    defined $consistency or croak "'execute' needs a consistency level";
@@ -737,7 +919,7 @@ sub execute
    _debug_wrap_result EXECUTE => $self, $self->_get_a_node->then( sub {
       my $node = shift;
       $self->debug_printf( "EXECUTE on {%s}: %s [%s]", $node->nodeid, $query->cql, unpack "H*", $query->id );
-      $node->execute( $query->id, $data, $consistency );
+      $node->execute( $query->id, $data, $consistency, %other_args );
    });
 }
 
@@ -854,10 +1036,6 @@ sub _list_nodes
 
 =item *
 
-Allow storing multiple Cassandra seed node hostnames for startup.
-
-=item *
-
 Allow other load-balancing strategies than roundrobin.
 
 =item *
@@ -870,7 +1048,9 @@ Allow backup nodes, for faster connection failover.
 
 =item *
 
-Use C<TOPOLOGY_CHANGE> events to keep the nodelist updated.
+Support LZ4 compression when using CQL version 2.
+
+This is blocked on RT #92825
 
 =back
 

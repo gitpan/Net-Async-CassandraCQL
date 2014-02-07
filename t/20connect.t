@@ -97,6 +97,24 @@ ok( $f->is_ready, '$f is now ready' );
    ok( $f->is_ready, '$f is now ready' );
 }
 
+# List of hosts
+{
+   $cass->configure(
+      hosts => [qw( seed-1 seed-2 )],
+   );
+
+   push @connect_futures, my $conn1_f = Future->new, my $conn2_f = Future->new;
+
+   my $f = $cass->connect;
+
+   is( $connect_host, "seed-1", '->connect host for list of hosts' );
+   $conn1_f->fail( "Connection failed", connect => "don't wanna not gonna" );
+
+   is( $connect_host, "seed-2", '->connect host after first of list fails' );
+
+   $conn2_f->done( $conn );
+}
+
 done_testing;
 
 package TestConnection;

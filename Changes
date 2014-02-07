@@ -1,5 +1,12 @@
 Revision history for Net-Async-CassandraCQL
 
+0.10    2014/02/07 22:28:24
+        [CHANGES]
+         * Allow a list of initial seed hosts for connect reliability
+         * Use TOPOLOGY_CHANGE events to keep the nodelist updated
+         * Support CQLv2
+         * Make Snappy compression optional
+
 0.09    2013/09/25 18:31:37
         [CHANGES]
          * Allow unreferenced prepared queries to live for a few more

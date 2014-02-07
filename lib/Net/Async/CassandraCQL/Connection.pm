@@ -1,7 +1,7 @@
 #  You may distribute under the terms of either the GNU General Public License
 #  or the Artistic License (the same terms as Perl itself)
 #
-#  (C) Paul Evans, 2013 -- leonerd@leonerd.org.uk
+#  (C) Paul Evans, 2013-2014 -- leonerd@leonerd.org.uk
 
 package Net::Async::CassandraCQL::Connection;
 
@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 use base qw( IO::Async::Stream );
 IO::Async::Stream->VERSION( '0.59' );
@@ -18,15 +18,14 @@ use Carp;
 
 use Future 0.13;
 
-use Compress::Snappy qw( compress decompress );
+use constant HAVE_SNAPPY => eval { require Compress::Snappy };
 
 use Protocol::CassandraCQL qw(
    :opcodes :results :consistencies FLAG_COMPRESS
    build_frame parse_frame
 );
 use Protocol::CassandraCQL::Frame;
-use Protocol::CassandraCQL::ColumnMeta;
-use Protocol::CassandraCQL::Result;
+use Protocol::CassandraCQL::Frames 0.10 qw( :all );
 
 use Net::Async::CassandraCQL::Query;
 
@@ -79,6 +78,11 @@ The following named parameters may be passed to C<new> or C<configure>:
 
 Optional. Authentication details to use for C<PasswordAuthenticator>.
 
+=item cql_version => INT
+
+Optional. Version of the CQL wire protocol to negotiate during connection.
+Defaults to 1.
+
 =back
 
 =cut
@@ -90,6 +94,7 @@ sub _init
 
    $self->{streams} = []; # map [1 .. 127] to Future
    $self->{pending} = []; # queue of [$opcode, $frame, $f]
+   $self->{cql_version} = 1;
 }
 
 sub configure
@@ -97,7 +102,7 @@ sub configure
    my $self = shift;
    my %params = @_;
 
-   foreach (qw( username password
+   foreach (qw( username password cql_version
                 on_event on_topology_change on_status_change on_schema_change )) {
       $self->{$_} = delete $params{$_} if exists $params{$_};
    }
@@ -122,27 +127,27 @@ sub nodeid
    $self->{nodeid};
 }
 
+sub _version
+{
+   my $self = shift;
+   return $self->{cql_version};
+}
+
 # function
 sub _decode_result
 {
-   my ( $response ) = @_;
+   my ( $version, $response ) = @_;
 
-   my $result = $response->unpack_int;
+   my ( $type, $result ) = parse_result_frame( $version, $response );
 
-   if( $result == RESULT_VOID ) {
+   if( $type == RESULT_VOID ) {
       return Future->new->done();
    }
-   elsif( $result == RESULT_ROWS ) {
-      return Future->new->done( rows => Protocol::CassandraCQL::Result->from_frame( $response ) );
-   }
-   elsif( $result == RESULT_SET_KEYSPACE ) {
-      return Future->new->done( keyspace => $response->unpack_string );
-   }
-   elsif( $result == RESULT_SCHEMA_CHANGE ) {
-      return Future->new->done( schema_change => [ map { $response->unpack_string } 1 .. 3 ] );
-   }
    else {
-      return Future->new->done( "??" => $response->bytes );
+      if   ( $type == RESULT_ROWS          ) { $type = "rows"          }
+      elsif( $type == RESULT_SET_KEYSPACE  ) { $type = "keyspace"      }
+      elsif( $type == RESULT_SCHEMA_CHANGE ) { $type = "schema_change" }
+      return Future->new->done( $type => $result );
    }
 }
 
@@ -172,7 +177,7 @@ sub connect
 
    return ( $self->{connect_f} ||=
       $self->SUPER::connect( %args )->on_fail( sub { undef $self->{connect_f} } ) )
-      ->and_then( sub {
+      ->then( sub {
          $self->{nodeid} = $self->read_handle->peerhost;
          $self->startup
       })->then( sub { Future->new->done( $self ) });
@@ -192,13 +197,18 @@ sub on_read
 
    my ( $version, $flags, $streamid, $opcode, $body ) = parse_frame( $$buffref ) or return 0;
 
-   # v1 response
-   $version == 0x81 or
+   $version & 0x80 or
+      $self->fail_all_and_close( "Expected response to have RESPONSE bit set" ), return;
+   $version &= 0x7f;
+
+   # Test version <= for now in case of "unsupported protocol version" error messages, and
+   # test it exactly later
+   $version <= $self->_version or
       $self->fail_all_and_close( sprintf "Unexpected message version %#02x\n", $version ), return;
 
-   if( $flags & FLAG_COMPRESS ) {
+   if( HAVE_SNAPPY and $flags & FLAG_COMPRESS ) {
       $flags &= ~FLAG_COMPRESS;
-      $body = decompress( $body );
+      $body = Compress::Snappy::decompress( $body );
    }
 
    $flags == 0 or
@@ -210,25 +220,26 @@ sub on_read
       undef $self->{streams}[$streamid];
 
       if( $opcode == OPCODE_ERROR ) {
-         my $err     = $frame->unpack_int;
-         my $message = $frame->unpack_string;
+         my ( $err, $message ) = parse_error_frame( $version, $frame );
          $f->fail( "OPCODE_ERROR: $message\n", $err, $frame );
       }
       else {
-         $f->done( $opcode, $frame );
+         $version == $self->_version or
+            $self->fail_all_and_close( sprintf "Unexpected message version %#02x\n", $version ), return;
+
+         $f->done( $opcode, $frame, $version );
       }
 
       if( my $next = shift @{ $self->{pending} } ) {
          my ( $opcode, $frame, $f ) = @$next;
          $self->_send( $opcode, $streamid, $frame, $f );
       }
-      elsif( $self->{conn_closing} and !$self->_has_pending ) {
-         $self->close;
+      elsif( my $close_f = $self->{cassandra_close_future} and !$self->_has_pending ) {
+         $close_f->done( $self );
       }
    }
    elsif( $streamid == 0 and $opcode == OPCODE_ERROR ) {
-      my $err     = $frame->unpack_int;
-      my $message = $frame->unpack_string;
+      my ( $err, $message ) = parse_error_frame( $version, $frame );
       $self->fail_all_and_close( "OPCODE_ERROR: $message\n", $err, $frame );
    }
    elsif( $streamid == 0xff and $opcode == OPCODE_EVENT ) {
@@ -246,25 +257,7 @@ sub _event
    my $self = shift;
    my ( $frame ) = @_;
 
-   my $name = $frame->unpack_string;
-
-   my @args;
-   if( $name eq "TOPOLOGY_CHANGE" ) {
-      push @args, $frame->unpack_string; # type
-      push @args, $frame->unpack_inet;   # node
-   }
-   elsif( $name eq "STATUS_CHANGE" ) {
-      push @args, $frame->unpack_string; # status
-      push @args, $frame->unpack_inet;   # node
-   }
-   elsif( $name eq "SCHEMA_CHANGE" ) {
-      push @args, $frame->unpack_string; # type
-      push @args, $frame->unpack_string; # keyspace
-      push @args, $frame->unpack_string; # table
-   }
-   else {
-       push @args, $frame;
-   }
+   my ( $name, @args ) = parse_event_frame( $self->_version, $frame );
 
    $self->maybe_invoke_event( "on_".lc($name), @args )
       or $self->maybe_invoke_event( on_event => $name, @args );
@@ -304,11 +297,11 @@ sub fail_all_and_close
    return Future->new->fail( $failure );
 }
 
-=head2 $conn->send_message( $opcode, $frame ) ==> ( $reply_opcode, $reply_frame )
+=head2 $conn->send_message( $opcode, $frame ) ==> ( $reply_opcode, $reply_frame, $reply_version )
 
 Sends a message with the given opcode and L<Protocol::CassandraCQL::Frame> for
-the message body. The returned Future will yield the response opcode and
-frame.
+the message body. The returned Future will yield the response opcode, frame
+and version number (with the RESPONSE bit masked off).
 
 This is a low-level method; applications should instead use one of the wrapper
 methods below.
@@ -320,7 +313,7 @@ sub send_message
    my $self = shift;
    my ( $opcode, $frame ) = @_;
 
-   croak "Cannot ->send_message when in close-pending state" if $self->{conn_closing};
+   croak "Cannot ->send_message when in close-pending state" if $self->{cassandra_close_future};
 
    my $f = $self->loop->new_future;
 
@@ -352,13 +345,15 @@ sub _send
    my $flags = 0;
    my $body = $frame->bytes;
 
-   my $body_compressed = compress( $body );
-   if( length $body_compressed < length $body ) {
-      $flags |= FLAG_COMPRESS;
-      $body = $body_compressed;
+   if( HAVE_SNAPPY ) {
+      my $body_compressed = Compress::Snappy::compress( $body );
+      if( length $body_compressed < length $body ) {
+         $flags |= FLAG_COMPRESS;
+         $body = $body_compressed;
+      }
    }
 
-   $self->write( build_frame( 0x01, $flags, $id, $opcode, $body ) );
+   $self->write( build_frame( $self->_version, $flags, $id, $opcode, $body ) );
 
    $self->{streams}[$id] = $f;
 }
@@ -376,19 +371,19 @@ sub startup
 {
    my $self = shift;
 
-   $self->send_message( OPCODE_STARTUP,
-      Protocol::CassandraCQL::Frame->new->pack_string_map( {
-            CQL_VERSION => "3.0.5",
-            COMPRESSION => "Snappy",
+   $self->send_message( OPCODE_STARTUP, build_startup_frame( $self->_version,
+      options => {
+         CQL_VERSION => "3.0.5",
+         ( HAVE_SNAPPY ? ( COMPRESSION => "Snappy" ) : () ),
       } )
    )->then( sub {
-      my ( $op, $response ) = @_;
+      my ( $op, $response, $version ) = @_;
 
       if( $op == OPCODE_READY ) {
          return Future->new->done;
       }
       elsif( $op == OPCODE_AUTHENTICATE ) {
-         return $self->_authenticate( $response->unpack_string );
+         return $self->_authenticate( parse_authenticate_frame( $version, $response ) );
       }
       else {
          return $self->fail_all_and_close( "Expected OPCODE_READY or OPCODE_AUTHENTICATE" );
@@ -406,14 +401,13 @@ sub _authenticate
          defined $self->{$_} or croak "Cannot authenticate by password without $_";
       }
 
-      $self->send_message( OPCODE_CREDENTIALS,
-         Protocol::CassandraCQL::Frame->new->pack_string_map( {
+      $self->send_message( OPCODE_CREDENTIALS, build_credentials_frame( $self->_version,
+         credentials => {
             username => $self->{username},
             password => $self->{password},
-         }
-      )
+         } )
       )->then( sub {
-         my ( $op, $response ) = @_;
+         my ( $op, $response, $version ) = @_;
          $op == OPCODE_READY or return $self->fail_all_and_close( "Expected OPCODE_READY" );
 
          return Future->new->done;
@@ -439,20 +433,15 @@ sub options
    $self->send_message( OPCODE_OPTIONS,
       Protocol::CassandraCQL::Frame->new
    )->then( sub {
-      my ( $op, $response ) = @_;
+      my ( $op, $response, $version ) = @_;
       $op == OPCODE_SUPPORTED or return Future->new->fail( "Expected OPCODE_SUPPORTED" );
 
-      my %opts;
-      # $response contains a multimap; short * { string, string list }
-      foreach ( 1 .. $response->unpack_short ) {
-         my $name = $response->unpack_string;
-         $opts{$name} = $response->unpack_string_list;
-      }
-      return Future->new->done( \%opts );
+      my ( $opts ) = parse_supported_frame( $version, $response );
+      return Future->new->done( $opts );
    });
 }
 
-=head2 $conn->query( $cql, $consistency ) ==> ( $type, $result )
+=head2 $conn->query( $cql, $consistency, %other_args ) ==> ( $type, $result )
 
 Performs a CQL query. On success, the values returned from the Future will
 depend on the type of query.
@@ -470,20 +459,25 @@ L<Protocol::CassandraCQL::Result> containing the returned row data.
 For other queries, such as C<INSERT>, C<UPDATE> and C<DELETE>, the future
 returns nothing.
 
+Any other arguments will be passed on to the underlying C<build_query_frame>
+function of L<Protocol::CassandraCQL::Frames>.
+
 =cut
 
 sub query
 {
    my $self = shift;
-   my ( $cql, $consistency ) = @_;
+   my ( $cql, $consistency, %other_args ) = @_;
 
-   $self->send_message( OPCODE_QUERY,
-      Protocol::CassandraCQL::Frame->new->pack_lstring( $cql )
-                                        ->pack_short( $consistency )
+   $self->send_message( OPCODE_QUERY, build_query_frame( $self->_version,
+         cql         => $cql,
+         consistency => $consistency,
+         %other_args,
+      )
    )->then( sub {
-      my ( $op, $response ) = @_;
+      my ( $op, $response, $version ) = @_;
       $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
-      return _decode_result( $response );
+      return _decode_result( $version, $response );
    });
 }
 
@@ -499,24 +493,36 @@ sub prepare
    my $self = shift;
    my ( $cql, $cassandra ) = @_;
 
-   $self->send_message( OPCODE_PREPARE,
-      Protocol::CassandraCQL::Frame->new->pack_lstring( $cql )
+   $self->send_message( OPCODE_PREPARE, build_prepare_frame( $self->_version,
+         cql => $cql,
+      )
    )->then( sub {
-      my ( $op, $response ) = @_;
+      my ( $op, $response, $version ) = @_;
       $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
 
-      $response->unpack_int == RESULT_PREPARED or return Future->new->fail( "Expected RESULT_PREPARED" );
+      my ( $type, $result ) = parse_result_frame( $version, $response );
+      $type == RESULT_PREPARED or return Future->new->fail( "Expected RESULT_PREPARED" );
 
-      my $query = Net::Async::CassandraCQL::Query->from_frame( $cassandra, $cql, $response );
+      my ( $id, $params_meta, $result_meta ) = @$result;
+
+      my $query = Net::Async::CassandraCQL::Query->new(
+         cassandra   => $cassandra,
+         cql         => $cql,
+         id          => $id,
+         params_meta => $params_meta,
+         result_meta => $result_meta, # v2+ only
+      );
       return Future->new->done( $query );
    });
 }
 
-=head2 $conn->execute( $id, $data, $consistency ) ==> ( $type, $result )
+=head2 $conn->execute( $id, $data, $consistency, %other_args ) ==> ( $type, $result )
 
 Executes a previously-prepared statement, given its ID and the binding data.
 On success, the returned Future will yield results of the same form as the
 C<query> method. C<$data> should contain a list of encoded byte-string values.
+Any other arguments will be passed on to the underlying C<build_execute_frame>
+function of L<Protocol::CassandraCQL::Frames>.
 
 Normally this method is not directly required - instead, use the C<execute>
 method on the query object itself, as this will encode the parameters
@@ -527,18 +533,18 @@ correctly.
 sub execute
 {
    my $self = shift;
-   my ( $id, $data, $consistency ) = @_;
+   my ( $id, $data, $consistency, %other_args ) = @_;
 
-   my $frame = Protocol::CassandraCQL::Frame->new
-      ->pack_short_bytes( $id )
-      ->pack_short( scalar @$data );
-   $frame->pack_bytes( $_ ) for @$data;
-   $frame->pack_short( $consistency );
-
-   $self->send_message( OPCODE_EXECUTE, $frame )->then( sub {
-      my ( $op, $response ) = @_;
+   $self->send_message( OPCODE_EXECUTE, build_execute_frame( $self->_version,
+         id          => $id,
+         values      => $data,
+         consistency => $consistency,
+         %other_args,
+      )
+   )->then( sub {
+      my ( $op, $response, $version ) = @_;
       $op == OPCODE_RESULT or return Future->new->fail( "Expected OPCODE_RESULT" );
-      return _decode_result( $response );
+      return _decode_result( $version, $response );
    });
 }
 
@@ -555,21 +561,25 @@ sub register
    my $self = shift;
    my ( $events ) = @_;
 
-   $self->send_message( OPCODE_REGISTER,
-      Protocol::CassandraCQL::Frame->new->pack_string_list( $events )
+   $self->send_message( OPCODE_REGISTER, build_register_frame( $self->_version,
+         events => $events,
+      )
    )->then( sub {
-      my ( $op, $response ) = @_;
+      my ( $op, $response, $version ) = @_;
       $op == OPCODE_READY or Future->new->fail( "Expected OPCODE_READY" );
 
       return Future->new->done;
    });
 }
 
-=head2 $conn->close_when_idle
+=head2 $conn->close_when_idle ==> $conn
 
 If the connection is idle (has no outstanding queries), then it is closed
 immediately. If not, it is put into close-pending mode, where it will accept
 no more queries, and will close when the last pending one is complete.
+
+Returns a future which will eventually yield the (closed) connection when it
+becomes closed.
 
 =cut
 
@@ -577,12 +587,14 @@ sub close_when_idle
 {
    my $self = shift;
 
-   if( $self->_has_pending ) {
-      $self->{conn_closing} = 1;
-   }
-   else {
-      $self->close;
-   }
+   $self->{cassandra_close_future} ||= do {
+      my $f = $self->loop->new_future;
+      $f->on_done( sub { $_[0]->close } );
+
+      $f->done( $self ) if !$self->_has_pending;
+
+      $f
+   };
 }
 
 =head1 SPONSORS

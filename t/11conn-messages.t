@@ -30,17 +30,30 @@ $loop->add( $conn );
    my $f = $conn->startup;
 
    my $stream = "";
-   wait_for_stream { length $stream >= 8 + 22 } $S2 => $stream;
 
-   # OPCODE_STARTUP
-   # Since this map will contain 2 elements, we'll have to detect the order
-   # and supply the appropriate bytestring
-   is_hexstr( $stream,
-              "\x01\x00\x01\x01\0\0\0\x2b" .
-                 "\x00\x02" . ( $stream =~ m/CQL_VERSION.*COMPRESSION/
-                    ? "\x00\x0bCQL_VERSION\x00\x053.0.5\x00\x0bCOMPRESSION\x00\x06Snappy"
-                    : "\x00\x0bCOMPRESSION\x00\x06Snappy\x00\x0bCQL_VERSION\x00\x053.0.5" ),
-              'stream after ->startup' );
+   if( Net::Async::CassandraCQL::Connection::HAVE_SNAPPY ) {
+      wait_for_stream { length $stream >= 8 + 43 } $S2 => $stream;
+
+      # OPCODE_STARTUP
+      # Since this map will contain 2 elements, we'll have to detect the order
+      # and supply the appropriate bytestring
+      is_hexstr( $stream,
+                 "\x01\x00\x01\x01\0\0\0\x2b" .
+                    "\x00\x02" . ( $stream =~ m/CQL_VERSION.*COMPRESSION/
+                       ? "\x00\x0bCQL_VERSION\x00\x053.0.5\x00\x0bCOMPRESSION\x00\x06Snappy"
+                       : "\x00\x0bCOMPRESSION\x00\x06Snappy\x00\x0bCQL_VERSION\x00\x053.0.5" ),
+                 'stream after ->startup' );
+   }
+   else {
+      wait_for_stream { length $stream >= 8 + 22 } $S2 => $stream;
+
+      # OPCODE_STARTUP
+      is_hexstr( $stream,
+                 "\x01\x00\x01\x01\0\0\0\x16" .
+                    "\x00\x01" .
+                       "\x00\x0bCQL_VERSION\x00\x053.0.5",
+                 'stream after ->startup' );
+   }
 
    # OPCODE_READY
    $S2->syswrite( "\x81\x00\x01\x02\0\0\0\0" );
@@ -243,6 +256,37 @@ $loop->add( $conn );
 
    is_deeply( [ $f->get ], [],
               '->execute returns nothing' );
+}
+
+# ->query with some v2 fields
+{
+   $conn->configure( cql_version => 2 );
+
+   my $f = $conn->query( "SELECT key, v FROM table", CONSISTENCY_ANY,
+      page_size => 100,
+   );
+
+   my $stream = "";
+   wait_for_stream { length $stream >= 8 + 35 } $S2 => $stream;
+
+   # OPCODE_QUERY
+   is_hexstr( $stream,
+              "\x02\x00\x01\x07\0\0\0\x23" .
+                 "\x00\x00\x00\x18SELECT key, v FROM table\x00\x00" . "\x04" .
+                    "\x00\x00\x00\x64",
+              'stream after ->query v2' );
+
+   # OPCODE_RESULT
+   $S2->syswrite( "\x82\x00\x01\x08\0\0\0\x29\0\0\0\2" .
+                     "\0\0\0\1\0\0\0\2\0\4test\0\5table\0\3key\x00\x0D\0\1v\x00\x09" . # metadata
+                     "\0\0\0\0"
+                  );
+
+   wait_for { $f->is_ready };
+
+   my $result = ( $f->get )[1];
+   is( $result->columns, 2, '$result->columns' );
+   is( $result->rows, 0, '$result->rows' );
 }
 
 done_testing;

@@ -97,6 +97,28 @@ $loop->add( $conn );
               '$f->failure' );
 }
 
+# cql_version
+{
+   $conn->configure( cql_version => 2 );
+
+   my $f = $conn->send_message( 1,
+      Protocol::CassandraCQL::Frame->new->pack_string_list( [] ) );
+
+   my $stream = "";
+   wait_for_stream { length $stream >= 10 } $S2 => $stream;
+
+   is_hexstr( $stream,
+              "\x02\x00\x01\x01\0\0\0\2\0\0",
+              'stream after ->send_message with cql_version 2' );
+
+   $S2->syswrite( "\x82\x00\x01\x02\0\0\0\0" );
+
+   wait_for { $f->is_ready };
+
+   ok( $f->is_ready, '$f now ready after server replies v2' );
+   is( ( $f->get )[2], 2, '$version in response future for v2' );
+}
+
 # Closing
 {
    my $closed;
@@ -106,14 +128,17 @@ $loop->add( $conn );
    my $stream = "";
    wait_for_stream { length $stream >= 8 } $S2 => $stream;
 
-   $conn->close_when_idle;
+   my $close_f = $conn->close_when_idle;
    ok( !$closed, 'Stream not yet closed before reply' );
+   ok( !$close_f->is_ready, 'close future not yet ready' );
 
-   $S2->syswrite( "\x81\x00\x01\x05\0\0\0\0" );
+   # cql_version 2 now
+   $S2->syswrite( "\x82\x00\x01\x05\0\0\0\0" );
 
    wait_for { $f->is_ready };
 
    ok( $closed, 'Stream now closed after reply' );
+   is( scalar $close_f->get, $conn, 'close future ready and yields $conn' );
 }
 
 done_testing;

@@ -66,9 +66,9 @@ $loop->add( $cass );
 
    is( $query->id, "0123456789ABCDEF", '$query->id after ->prepare->get' );
    is( $query->cql, "INSERT INTO t (f) = (?)", '$query->cql after ->prepare->get' );
-   is( $query->columns, 1, '$query->columns' );
-   is( scalar $query->column_name(0), "test.t.f", '$query->column_name(0)' );
-   is( $query->column_type(0)->name, "VARCHAR", '$query->column_type(0)->name' );
+   is( $query->params, 1, '$query->params' );
+   is( scalar $query->param_name(0), "test.t.f", '$query->param_name(0)' );
+   is( $query->param_type(0)->name, "VARCHAR", '$query->param_type(0)->name' );
 
    {
       my $f2 = $cass->prepare( CQL_STRING );
@@ -168,6 +168,71 @@ $loop->add( $cass );
 
    ok( !keys %{ $cass->{queries_by_cql} },
        '$cass has no more cached queries after timer expire' );
+}
+
+# CQL v2 returns result metadata from PREPARED, so we should use no_metadata on
+# execute
+{
+   $cass->configure( cql_version => 2 );
+   $conn->configure( cql_version => 2 );
+
+   my $f = $cass->prepare( "SELECT a, b FROM table WHERE b = ?" );
+
+   my $stream = "";
+   wait_for_stream { length $stream >= 8 + 38 } $S2 => $stream; # TODO
+
+   # OPCODE_PREPARE
+   is_hexstr( $stream,
+              "\x02\x00\x01\x09\0\0\0\x26" .
+                 "\0\0\0\x22SELECT a, b FROM table WHERE b = ?",
+              'stream after ->prepare v2' );
+
+   # OPCODE_RESULT
+   $S2->syswrite( "\x82\x00\x01\x08\0\0\0\x4f\0\0\0\4" .
+                     "\x00\x100123456789ABCDFE" .
+                     "\0\0\0\1\0\0\0\1\0\4test\0\5table\0\1b\x00\x0D" .
+                     "\0\0\0\1\0\0\0\2\0\4test\0\5table\0\1a\x00\x09\0\1b\x00\x0D" );
+
+   wait_for { $f->is_ready };
+
+   my $query = $f->get;
+
+   is( $query->params, 1, '$query->params' );
+   ok( defined $query->result_meta, '$query->result_meta defined' );
+   is( $query->result_meta->columns, 2, '$query->result_meta->columns' );
+
+   # ->execute
+   $f = $query->execute( [ "the-key" ], CONSISTENCY_ANY );
+
+   $stream = "";
+   wait_for_stream { length $stream >= 8 + 34 } $S2 => $stream;
+
+   # OPCODE_EXECUTE
+   is_hexstr( $stream,
+              "\x02\x00\x01\x0A\0\0\0\x22" .
+                 "\x00\x100123456789ABCDFE" .
+                 "\x00\x00\x03\x00\x01" .
+                    "\0\0\0\7the-key",
+              'stream after $query->execute(ARRAY) for v2' );
+
+   # OPCODE_RESULT
+   $S2->syswrite( "\x82\x00\x01\x08\0\0\0\x23\0\0\0\2" .
+                     "\0\0\0\4\0\0\0\2" .
+                     "\0\0\0\1" .
+                     "\0\0\0\4\x00\x00\x02\x46\0\0\0\7the-key" );
+
+   wait_for { $f->is_ready };
+
+   my ( $type, $result ) = $f->get;
+
+   is( $result->columns, 2, '$result->columns' );
+   is( $result->rows,    1, '$result->rows' );
+
+   is( $result->column_shortname( 0 ), "a", '$result->column_shortname' );
+
+   is_deeply( $result->row_array( 0 ),
+              [ 0x0246, "the-key" ],
+              '$result->row_array' );
 }
 
 done_testing;

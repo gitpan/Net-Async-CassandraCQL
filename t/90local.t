@@ -39,10 +39,12 @@ my $cass = Net::Async::CassandraCQL->new(
 );
 $loop->add( $cass );
 
-$cass->connect(
+my $f = $cass->connect(
    host     => $CONFIG{host},
    service  => $CONFIG{port},
-)->get;
+);
+wait_for { $f->is_ready };
+$f->get;
 
 $cass->query( "CREATE TABLE tbl1 (key varchar PRIMARY KEY, t1 varchar, i1 int)" )->get;
 my $table = 1;
