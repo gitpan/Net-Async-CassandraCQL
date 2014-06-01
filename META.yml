@@ -3,38 +3,39 @@ abstract: 'use Cassandra databases with L<IO::Async> using CQL'
 author:
   - 'Paul Evans <leonerd@leonerd.org.uk>'
 build_requires:
-  IO::Async::Test: 0
-  Test::Fatal: 0
-  Test::HexString: 0
-  Test::Identity: 0
-  Test::More: 0.88
-  Test::Refcount: 0
+  IO::Async::Test: '0'
+  Test::Fatal: '0'
+  Test::HexString: '0'
+  Test::Identity: '0'
+  Test::More: '0.88'
+  Test::Refcount: '0'
 dynamic_config: 1
-generated_by: 'Module::Build version 0.4203, CPAN::Meta::Converter version 2.133380'
+generated_by: 'Module::Build version 0.4205, CPAN::Meta::Converter version 2.133380'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
-  version: 1.4
+  version: '1.4'
 name: Net-Async-CassandraCQL
 provides:
   Net::Async::CassandraCQL:
     file: lib/Net/Async/CassandraCQL.pm
-    version: 0.10
+    version: '0.11'
   Net::Async::CassandraCQL::Connection:
     file: lib/Net/Async/CassandraCQL/Connection.pm
-    version: 0.10
+    version: '0.11'
   Net::Async::CassandraCQL::Query:
     file: lib/Net/Async/CassandraCQL/Query.pm
-    version: 0.10
+    version: '0.11'
 recommends:
-  Compress::Snappy: 0
+  Compress::LZ4: '0'
+  Compress::Snappy: '0'
 requires:
-  Devel::GlobalDestruction: 0
-  Future: 0.17
-  IO::Async::Loop: 0.54
-  IO::Async::Stream: 0.59
-  IO::Socket::IP: 0
-  Protocol::CassandraCQL: 0.11
+  Devel::GlobalDestruction: '0'
+  Future: '0.17'
+  IO::Async::Loop: '0.54'
+  IO::Async::Stream: '0.59'
+  IO::Socket::IP: '0'
+  Protocol::CassandraCQL: '0.11'
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.10
+version: '0.11'

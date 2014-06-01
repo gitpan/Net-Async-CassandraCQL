@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 use base qw( IO::Async::Stream );
 IO::Async::Stream->VERSION( '0.59' );
@@ -19,6 +19,7 @@ use Carp;
 use Future 0.13;
 
 use constant HAVE_SNAPPY => eval { require Compress::Snappy };
+use constant HAVE_LZ4    => eval { require Compress::LZ4 };
 
 use Protocol::CassandraCQL qw(
    :opcodes :results :consistencies FLAG_COMPRESS
@@ -206,9 +207,9 @@ sub on_read
    $version <= $self->_version or
       $self->fail_all_and_close( sprintf "Unexpected message version %#02x\n", $version ), return;
 
-   if( HAVE_SNAPPY and $flags & FLAG_COMPRESS ) {
+   if( $flags & FLAG_COMPRESS and my $decompress = $self->{decompress} ) {
       $flags &= ~FLAG_COMPRESS;
-      $body = Compress::Snappy::decompress( $body );
+      $body = $decompress->( $body );
    }
 
    $flags == 0 or
@@ -345,8 +346,8 @@ sub _send
    my $flags = 0;
    my $body = $frame->bytes;
 
-   if( HAVE_SNAPPY ) {
-      my $body_compressed = Compress::Snappy::compress( $body );
+   if( my $compress = $self->{compress} ) {
+      my $body_compressed = $compress->( $body );
       if( length $body_compressed < length $body ) {
          $flags |= FLAG_COMPRESS;
          $body = $body_compressed;
@@ -371,10 +372,27 @@ sub startup
 {
    my $self = shift;
 
-   $self->send_message( OPCODE_STARTUP, build_startup_frame( $self->_version,
+   # CQLv1 doesn't support LZ4
+   my $compression;
+   if( HAVE_LZ4 and $self->_version > 1 ) {
+      # Cassandra prepends 32bit BE integer of original size
+      $compression = [ lz4 =>
+         sub { my ( $data ) = @_; pack "N a*", length $data, Compress::LZ4::lz4_compress( $data ) },
+         sub { my ( $bodylen, $lz4data ) = unpack "N a*", $_[0]; Compress::LZ4::lz4_decompress( $lz4data, $bodylen ) },
+      ];
+   }
+   elsif( HAVE_SNAPPY ) {
+      $compression = [ snappy =>
+         \&Compress::Snappy::compress,
+         \&Compress::Snappy::decompress,
+      ];
+   }
+   # else undef
+
+   my $f = $self->send_message( OPCODE_STARTUP, build_startup_frame( $self->_version,
       options => {
          CQL_VERSION => "3.0.5",
-         ( HAVE_SNAPPY ? ( COMPRESSION => "Snappy" ) : () ),
+         ( $compression ? ( COMPRESSION => $compression->[0] ) : () ),
       } )
    )->then( sub {
       my ( $op, $response, $version ) = @_;
@@ -389,6 +407,11 @@ sub startup
          return $self->fail_all_and_close( "Expected OPCODE_READY or OPCODE_AUTHENTICATE" );
       }
    });
+
+   $self->{compress}   = $compression->[1];
+   $self->{decompress} = $compression->[2];
+
+   return $f;
 }
 
 sub _authenticate

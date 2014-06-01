@@ -9,7 +9,7 @@ use strict;
 use warnings;
 use 5.010;
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 use base qw( IO::Async::Notifier );
 
@@ -550,7 +550,7 @@ sub _on_topology_change
 
       $nodes->{$nodeid} = {};
 
-      $self->query_rows( "SELECT peer, data_center, rack FROM system.peers WHERE peer = " . $self->quote( $nodeid ), CONSISTENCY_ONE )
+      my $f = $self->query_rows( "SELECT peer, data_center, rack FROM system.peers WHERE peer = " . $self->quote( $nodeid ), CONSISTENCY_ONE )
          ->on_done( sub {
             my ( $result ) = @_;
             my $node = $result->row_hash( 0 );
@@ -561,6 +561,9 @@ sub _on_topology_change
             $self->debug_printf( "NEW_NODE {%s}", $nodeid );
             $self->maybe_invoke_event( on_node_new => $nodeid );
          });
+
+      # Intentional cycle
+      $f->on_ready( sub { undef $f } );
    }
    elsif( $type eq "REMOVED_NODE" ) {
       return if !exists $nodes->{$nodeid};

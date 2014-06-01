@@ -1,5 +1,14 @@
 Revision history for Net-Async-CassandraCQL
 
+0.11    2014/06/01 12:35:56
+        [CHANGES]
+         * Optionally use LZ4 compression when using CQLv2
+
+        [BUGFIXES]
+         * Avoid relying on strong forward references in Future, by creating
+           intentional cycles on pending Futures. Workaround for bugfix in
+           upcoming Future release.
+
 0.10    2014/02/07 22:28:24
         [CHANGES]
          * Allow a list of initial seed hosts for connect reliability

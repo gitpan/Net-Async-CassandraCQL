@@ -41,7 +41,7 @@ $loop->add( $conn );
                  "\x01\x00\x01\x01\0\0\0\x2b" .
                     "\x00\x02" . ( $stream =~ m/CQL_VERSION.*COMPRESSION/
                        ? "\x00\x0bCQL_VERSION\x00\x053.0.5\x00\x0bCOMPRESSION\x00\x06Snappy"
-                       : "\x00\x0bCOMPRESSION\x00\x06Snappy\x00\x0bCQL_VERSION\x00\x053.0.5" ),
+                       : "\x00\x0bCOMPRESSION\x00\x06snappy\x00\x0bCQL_VERSION\x00\x053.0.5" ),
                  'stream after ->startup' );
    }
    else {

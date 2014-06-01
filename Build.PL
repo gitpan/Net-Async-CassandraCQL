@@ -22,7 +22,8 @@ my $build = Module::Build->new(
       'Test::Refcount' => 0,
    },
    recommends => {
-      'Compress::Snappy' => 0,
+      'Compress::Snappy' => 0, # for CQL v1 compression
+      'Compress::LZ4'    => 0, # for CQL v2 compression
    },
    auto_configure_requires => 0, # Don't add M::B to configure_requires
    license => 'perl',

@@ -13,6 +13,7 @@ GetOptions(
    'host|h=s' => \(my $HOST = "localhost"),
    'user|u=s' => \my $USERNAME,
    'pass|p=s' => \my $PASSWORD,
+   'version|V=i' => \my $CQL_VERSION,
 ) or exit 1;
 
 my $loop = IO::Async::Loop->new;
@@ -21,6 +22,7 @@ my $cass = Net::Async::CassandraCQL->new(
    host     => $HOST,
    username => $USERNAME,
    password => $PASSWORD,
+   cql_version => $CQL_VERSION,
 );
 $loop->add( $cass );
 
